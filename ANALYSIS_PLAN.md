@@ -121,6 +121,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
   not support the 1.10 LTS. Language features and stdlib methods introduced up to 1.12 may
   be used freely; there is no need to check anything against 1.10, and `julia +lts` is not
   part of this project's verification loop.
+- 2026-08-17 (CHUNK-002): Adding a metric takes **one** method,
+  `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`; every other piece of the
+  interface has a fallback. Metric *parameters* belong as fields of the metric type, never
+  as keywords to the call — `convention` and `normalize` are the only keywords, and
+  `pairwise` forwards exactly those. The sole entry point is `compare(metric, t1, t2)`;
+  metrics are intentionally not callable, so do not reintroduce `m(t1, t2)`.
 
 ## Chunks
 
@@ -168,14 +174,44 @@ Produce these live in the MCP Julia session and let them go when it exits.
   method) so a distance matrix over a tree collection works from day one. CHUNK-024
   replaces it with the preprocessing-hoisted version; the API must not change when it
   does.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-001
 - **Verification strategy**: A dummy test metric defined in the test suite dispatches
   correctly through every documented entry point, including the all-pairs path, both
   `convention` values, and both rooting traits.
-- **Notes**: This chunk sets the cost of every later chunk. Because ~15 metrics must fit
-  the same surface, favor a trait/singleton design that makes adding a metric a matter of
-  defining one type and one method.
+- **Notes**: Lives in `src/interface.jl`. **Adding a metric requires exactly one method:**
+  `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`. Everything else — the
+  `:primary` convention, `normalizer`, `requiresrooted`, `issimilarity` — has a fallback,
+  and the first two fail with a message naming the metric rather than a `MethodError`.
+
+  The single entry point is **`compare(metric, t1, t2; convention, normalize)`**. Metrics
+  are deliberately **not callable**: `m(t1, t2)` was removed so there is one way to apply a
+  metric, and a test asserts no call method exists.
+
+  Exported: `TreeMetric`, `Convention`, `TreeDistConvention`, `PrimaryConvention`,
+  `compare`, `pairwise`. The traits (`normalizer`, `requiresrooted`, `issimilarity`) are
+  `public` but unexported — they are extension points, not everyday calls. `pairwise`
+  collides with Distances.jl; exporting it anyway is a deliberate choice, with the collision
+  deferred (see Open Questions).
+
+  `convention` accepts the symbols `:treedist`/`:primary` **or** a `Convention` instance;
+  `Convention(::Symbol)` resolves at the boundary so internals dispatch on singleton types.
+  `Base.Symbol(::Convention)` gives the reverse, used for error messages.
+
+  Normalization is a division: metrics define `normalizer(m, conv, t1, t2)` and
+  `compare` divides by it. Metric parameters (JRF's `k`, Kendall-Colijn's λ) are **fields
+  of the metric type**, not keywords, so `pairwise` need not thread them.
+
+  `pairwise` honors generic axes — result axes track the input, tested against
+  `OffsetVector`. It fills one triangle and mirrors, relying on the documented symmetry of
+  every metric. Element type comes from the diagonal, which is part of the result, so no
+  comparison is evaluated and discarded. Empty input yields a 0×0 `Float64` matrix.
+
+  `OffsetArrays` added as a **test-only** dependency (`test/Project.toml`) to enforce the
+  generic-indexing contract.
+
+  The rooting precondition is *not* implemented here — only the `requiresrooted` trait it
+  will consult. CHUNK-003 adds the check into `compare`; there is deliberately no stub.
 
 ### CHUNK-003: tree-ingest-and-taxa
 - **Description**: Newick ingest via NewickTree.jl, plus canonical taxon indexing: given a
@@ -520,6 +556,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
 
 - 2026-08-17 CHUNK-001 (scaffold-package) → next: CHUNK-002
+- 2026-08-17 CHUNK-002 (design-distance-api) → next: CHUNK-003
 
 ## Open Questions
 
@@ -538,8 +575,15 @@ Produce these live in the MCP Julia session and let them go when it exits.
   maintained one. Revisit after CHUNK-010.
 - **TBR distance.** TreeDist defers Tree Bisection and Reconnection distance to a separate
   package (TBRDist). Not planned here; note if it should be added later.
-- **Generic indexing contract.** Path matrices and split bitsets are array-returning
-  APIs. Decide whether to honor the `AbstractArray` contract for offset/view inputs or to
-  declare `Base.require_one_based_indexing`. Recommendation: declare the 1-based
-  assumption explicitly — the canonical taxon indexing makes it natural — rather than
-  leaving it implicit.
+- **Generic indexing contract.** `pairwise` honors generic axes (CHUNK-002, tested against
+  `OffsetVector`). Still open for the array-returning internals: path matrices and split
+  bitsets are indexed by the canonical taxon ordering, where a 1-based assumption is
+  natural. Recommendation: declare it explicitly with `Base.require_one_based_indexing`
+  there rather than leaving it implicit, and keep the public-facing `pairwise` generic.
+- **Distances.jl name collision.** `pairwise` is exported despite colliding with
+  `Distances.pairwise` (and `StatsBase.pairwise`); a user loading both will need to qualify.
+  Deferred deliberately. When it is addressed, the options are: unexport `pairwise` again,
+  rename it, or subtype `Distances.SemiMetric` and implement their interface — the last
+  would make tree metrics usable by ecosystem code (clustering, MDS) at the cost of a
+  dependency. Revisit when the tree-space embedding work in CHUNK-025 shows what is actually
+  needed. Note that changing this after release is breaking.
