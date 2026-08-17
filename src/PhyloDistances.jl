@@ -50,7 +50,8 @@ export colwise, colwise!, evaluate, pairwise, pairwise!, result_type
 export readnw
 
 public branchlength, convention, incidencematrix, isnormalized, isrooted, issimilarity,
-    istrivial, normalizer, requiresrooted, taxonlabel, taxonlabels
+    istrivial, normalization, normalizer, normalizerinfo, requiresrooted, taxonlabel,
+    taxonlabels
 
 include("taxa.jl")
 include("splits.jl")

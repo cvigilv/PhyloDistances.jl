@@ -1,7 +1,8 @@
 using Distances: Distances
 using OffsetArrays: OffsetVector
 using PhyloDistances
-using PhyloDistances: convention, isnormalized, issimilarity, normalizer, requiresrooted
+using PhyloDistances: convention, isnormalized, issimilarity, normalization, normalizer,
+    normalizerinfo, requiresrooted
 using Test
 
 # Applying a metric reconciles the rooting of its inputs, so these need real trees. The
@@ -17,21 +18,21 @@ rooted(n) = readnw("((" * join(("T$i:1.0" for i in 1:(n - 1)), ",") * "):1.0,T$n
 nleaves(tree) = length(PhyloDistances.taxonlabels(tree))
 
 """Absolute difference; doubled under the primary convention, normalized by 10."""
-struct Gap{C<:Convention} <: TreeMetric
+struct Gap{C<:Convention,N} <: TreeMetric
     convention::C
-    normalize::Bool
+    normalize::N
 end
 Gap(; convention = TreeDistConvention(), normalize = false) =
     Gap(Convention(convention), normalize)
 PhyloDistances._compare(::Gap, ::TreeDistConvention, a, b) = abs(nleaves(a) - nleaves(b))
 PhyloDistances._compare(::Gap, ::PrimaryConvention, a, b) = 2 * abs(nleaves(a) - nleaves(b))
-PhyloDistances.normalizer(::Gap, ::Convention, a, b) = 10
+PhyloDistances.normalizerinfo(::Gap, ::Convention, tree) = 5 * nleaves(tree)
 Distances.result_type(m::Gap, ::Type, ::Type) = isnormalized(m) ? Float64 : Int
 
 """Implements only the TreeDist convention and defines no normalization."""
 struct TreeDistOnly <: TreeMetric
     convention::Convention
-    normalize::Bool
+    normalize::Any
 end
 TreeDistOnly(; convention = TreeDistConvention(), normalize = false) =
     TreeDistOnly(Convention(convention), normalize)
@@ -41,7 +42,7 @@ PhyloDistances._compare(::TreeDistOnly, ::TreeDistConvention, a, b) =
 """Largest on identical inputs, so a similarity rather than a distance."""
 struct Closeness <: TreeSimilarity
     convention::Convention
-    normalize::Bool
+    normalize::Any
 end
 Closeness(; convention = TreeDistConvention(), normalize = false) =
     Closeness(Convention(convention), normalize)
@@ -53,7 +54,7 @@ Distances.result_type(::Closeness, ::Type, ::Type) = Int
 struct Scaled <: TreeMetric
     factor::Int
     convention::Convention
-    normalize::Bool
+    normalize::Any
 end
 Scaled(factor; convention = TreeDistConvention(), normalize = false) =
     Scaled(factor, Convention(convention), normalize)
@@ -119,10 +120,41 @@ end
     end
 
     @testset "normalization is a field, not a keyword" begin
-        @test Gap(; normalize = true)(star(3), star(10)) == 0.7
+        # normalizerinfo is 5 * nleaves, and `true` sums it over both trees: 15 + 50 = 65.
+        @test Gap(; normalize = true)(star(3), star(10)) == 7 / 65
 
         # Normalization applies to the value the convention produced.
-        @test Gap(; convention = :primary, normalize = true)(star(3), star(10)) == 1.4
+        @test Gap(; convention = :primary, normalize = true)(star(3), star(10)) == 14 / 65
+    end
+
+    @testset "normalize accepts more than a flag" begin
+        raw = Gap()(star(3), star(10))
+        @test raw == 7
+
+        @test normalization(Gap()) === false
+        @test !isnormalized(Gap())
+        @test isnormalized(Gap(; normalize = true))
+
+        @testset "a number divides directly" begin
+            @test Gap(; normalize = 10)(star(3), star(10)) == 0.7
+            @test isnormalized(Gap(; normalize = 10))
+        end
+
+        @testset "a function combines the two trees' info" begin
+            # normalizerinfo is 15 and 50 for these trees.
+            @test Gap(; normalize = max)(star(3), star(10)) == 7 / 50
+            @test Gap(; normalize = min)(star(3), star(10)) == 7 / 15
+            @test Gap(; normalize = +)(star(3), star(10)) ==
+                  Gap(; normalize = true)(star(3), star(10))
+        end
+
+        @testset "`true` is the metric's own scheme, not the number one" begin
+            @test Gap(; normalize = true)(star(3), star(10)) != raw
+            @test Gap(; normalize = 1)(star(3), star(10)) == raw
+        end
+
+        @test normalizerinfo(Gap(), TreeDistConvention(), star(3)) == 15
+        @test normalizer(Gap(), TreeDistConvention(), star(3), star(10)) == 65
     end
 
     @testset "metric parameters live on the metric" begin
@@ -141,6 +173,12 @@ end
         @test_throws "no normalization is defined for TreeDistOnly" begin
             TreeDistOnly(; normalize = true)(star(3), star(10))
         end
+        @test_throws "no normalization is defined for TreeDistOnly" begin
+            TreeDistOnly(; normalize = max)(star(3), star(10))
+        end
+
+        # A bare divisor needs nothing from the metric, so it still works.
+        @test TreeDistOnly(; normalize = 2)(star(3), star(10)) == 3.5
     end
 end
 

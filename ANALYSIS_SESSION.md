@@ -90,8 +90,27 @@ Split extraction has been cross-checked against it: seven hand-picked pairs agre
 `TreeDist::RobinsonFoulds`, including a rooted tree against its unrooted twin (RF = 0) and
 a polytomy against a resolved tree. Split counts match `TreeTools::as.Splits`.
 
+## Normalization was widened
+
+`normalize` now mirrors TreeDist's `how` rather than being a flag: `false` (raw), `true`
+(the metric's own scheme), a **function** combining the two trees' `normalizerinfo`, or a
+**real number** used directly as the divisor. A metric supplies
+`normalizerinfo(m, convention, tree)` — what one tree carries — and `normalizer` sums the
+two by default, which is what TreeDist's `+` combiner does. `normalize = max` / `min` then
+express a result relative to the more or less informative tree.
+
+Verified against the reference with a Robinson-Foulds-shaped metric: `normalize = true`
+reproduces `TreeDist::RobinsonFoulds(..., normalize = TRUE)` exactly on four pairs
+(1, 0.5, 1, 0.6), including the polytomy case where `2(n-3)` would be wrong.
+
+Metrics implement their formula **without** `.FloorNumericalNoise`. Measure the divergence
+from the reference during validation and add flooring only if it proves material.
+
 ## Watch out for
 
+- **`Bool <: Real` in Julia.** The `normalize` dispatch puts `::Bool` ahead of `::Real` so
+  `normalize = true` means "the metric's own scheme" while `normalize = 1` means "divide by
+  one". Preserve that ordering if the dispatch is touched.
 - **Derive normalizers from TreeDist, never from the literature.** TreeDist normalizes
   Robinson-Foulds by `n1 + n2`, the total splits present in the two trees — not by
   `2(n-3)`. The two agree for binary trees and diverge as soon as either has a polytomy.

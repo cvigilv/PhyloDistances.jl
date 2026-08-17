@@ -105,12 +105,21 @@ SomeMetric(; convention = :primary)
 
 ### Normalization
 
-`normalize = true` divides the result by the largest value the metric can take on trees
-with the given taxon set, placing it on a scale comparable across taxon set sizes:
+The `normalize` field scales the result onto a range comparable across taxon set sizes. It
+takes more than a flag:
 
 ```julia
-SomeMetric(; normalize = true)(tree1, tree2)
+SomeMetric()(t1, t2)                      # raw value
+SomeMetric(; normalize = true)(t1, t2)    # the metric's own scheme
+SomeMetric(; normalize = max)(t1, t2)     # relative to the more informative tree
+SomeMetric(; normalize = min)(t1, t2)     # relative to the less informative tree
+SomeMetric(; normalize = 12)(t1, t2)      # divided by a value you supply
 ```
+
+A function is applied to what each tree carries — its split count for a split-based
+metric, its information content for an information-based one — so `max` and `min` express
+the result relative to one tree or the other. `true` selects the scheme the metric defines
+for itself, which for Robinson-Foulds is the sum, the total splits present in the pair.
 
 ### Traits
 

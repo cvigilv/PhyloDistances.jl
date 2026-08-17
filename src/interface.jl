@@ -130,13 +130,28 @@ Reads the `convention` field; override for a metric that stores it differently.
 convention(comparison::TreeComparison) = comparison.convention
 
 """
-    isnormalized(comparison) -> Bool
+    normalization(comparison)
 
-Whether `comparison` divides its result by [`normalizer`](@ref).
+How `comparison` scales its result, as one of:
+
+  - `false` — return the raw value;
+  - `true` — divide by [`normalizer`](@ref), the metric's own scheme;
+  - a function — divide by `f(info₁, info₂)`, where each `infoᵢ` is the tree's
+    [`normalizerinfo`](@ref). `max` and `min` are the usual choices, giving a value
+    relative to the more or less informative of the two trees;
+  - a real number — divide by it.
 
 Reads the `normalize` field; override for a metric that stores it differently.
 """
-isnormalized(comparison::TreeComparison) = comparison.normalize
+normalization(comparison::TreeComparison) = comparison.normalize
+
+"""
+    isnormalized(comparison) -> Bool
+
+Whether `comparison` scales its result at all, i.e. whether [`normalization`](@ref) is
+anything other than `false`.
+"""
+isnormalized(comparison::TreeComparison) = normalization(comparison) !== false
 
 """
     requiresrooted(comparison) -> Bool
@@ -159,18 +174,34 @@ issimilarity(::TreeMetric) = false
 issimilarity(::TreeSimilarity) = true
 
 """
-    normalizer(comparison, convention, t1, t2) -> Real
+    normalizerinfo(comparison, convention, tree) -> Real
 
-The quantity a normalizing comparison divides its result by, typically the largest value
-it can take on trees with this taxon set.
+How much of what `comparison` measures a single `tree` carries — the count of splits for a
+split-based metric, the information content for an information-based one.
 
-Throws unless the metric defines a normalization.
+Combining the two trees' values gives the divisor for a normalized comparison, so defining
+this is what lets a metric be normalized against `max`, `min`, or any other combiner.
 """
-function normalizer(comparison::TreeComparison, ::Convention, t1, t2)
+function normalizerinfo(comparison::TreeComparison, ::Convention, tree)
     throw(ArgumentError(
         "no normalization is defined for $(nameof(typeof(comparison))); " *
         "construct it with normalize = false"
     ))
+end
+
+"""
+    normalizer(comparison, convention, t1, t2) -> Real
+
+The divisor a comparison constructed with `normalize = true` uses.
+
+Defaults to the sum of the two trees' [`normalizerinfo`](@ref), which places the result on
+the scale of what the pair jointly carries. Override for a metric whose natural scheme is
+not a sum, or whose divisor does not decompose per tree — a metric that overrides this
+without defining `normalizerinfo` cannot be normalized by a custom combiner.
+"""
+function normalizer(comparison::TreeComparison, convention::Convention, t1, t2)
+    return normalizerinfo(comparison, convention, t1) +
+           normalizerinfo(comparison, convention, t2)
 end
 
 """
@@ -190,8 +221,19 @@ function _apply(comparison::TreeComparison, t1, t2)
     _checkrooting(comparison, t1, t2)
     conv = convention(comparison)
     raw = _compare(comparison, conv, t1, t2)
-    isnormalized(comparison) || return raw
-    return raw / normalizer(comparison, conv, t1, t2)
+
+    how = normalization(comparison)
+    how === false && return raw
+    return raw / _divisor(comparison, conv, t1, t2, how)
+end
+
+# `Bool` is the more specific method, so `true` selects the metric's own scheme rather
+# than being taken for the number 1.
+_divisor(c::TreeComparison, conv, t1, t2, ::Bool) = normalizer(c, conv, t1, t2)
+_divisor(c::TreeComparison, conv, t1, t2, how::Real) = how
+
+function _divisor(c::TreeComparison, conv, t1, t2, how)
+    return how(normalizerinfo(c, conv, t1), normalizerinfo(c, conv, t2))
 end
 
 (metric::TreeMetric)(t1, t2) = _apply(metric, t1, t2)

@@ -74,6 +74,16 @@ These are user decisions, not open questions. They bind every chunk.
    Hungarian.jl, which is unmaintained relative to the pace of Julia's evolution. It is
    internal, not exported, and covered by its own tests against brute-force enumeration.
 
+5. **`normalize` mirrors TreeDist's `how`, and numerical noise is not floored — yet.**
+   The `normalize` field accepts `false` (raw), `true` (the metric's own scheme), a
+   function combining the two trees' `normalizerinfo`, or a real divisor. A metric supplies
+   `normalizerinfo(m, convention, tree)`; `normalizer` defaults to the sum of the two,
+   which is what TreeDist's `+` combiner does.
+
+   Metrics implement their formula **without** TreeDist's `.FloorNumericalNoise`. Measure
+   the divergence from the reference during validation; add flooring only if it proves
+   material, and record the decision then.
+
 4. **Distances.jl is the interface, not a model to imitate.** Metrics subtype
    `Distances.SemiMetric` and are applied by calling them, `m(t1, t2)`, which is what makes
    `pairwise`, `pairwise!`, `colwise`, `colwise!`, `evaluate` and `result_type` work
@@ -116,9 +126,10 @@ Two details of the reference that affect any value comparison:
 - `.FloorNumericalNoise` zeroes results below `sqrt(eps) * max(1, treesIndependentInfo)`,
   so reference values are deliberately floored. Reproducing a formula is not sufficient to
   reproduce a value.
-- TreeDist's `normalize` argument is `how`, accepting a function or a value, not just a
-  flag. This package exposes a `normalize::Bool` field; where a metric admits several
-  normalizers, document which one the flag selects.
+- TreeDist's `normalize` argument is `how`: `FALSE` gives the raw value, `TRUE` divides by
+  `Combine(info1, info2)` with `Combine` defaulting to `+`, a function is used as that
+  combiner, and anything else is the divisor itself. This package mirrors those four cases
+  (see Design decision 5).
 
 ## Target Outputs
 
@@ -207,6 +218,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
   trees and diverge as soon as either tree has a polytomy (verified: a 5-taxon star against
   a resolved tree normalizes by 2, where `2(n-3)` would give 4). Expect the same pattern
   for other metrics: derive normalizers from the reference, not from the literature.
+- 2026-08-17 (CHUNK-004): `normalize` accepts `false` / `true` / a function / a real
+  number, mirroring TreeDist's `how`. A metric defines `normalizerinfo(m, convention, tree)`
+  — the split count, information content, or whatever it measures in one tree — and
+  `normalizer` sums the two by default. `normalize = max` and `min` then express a result
+  relative to the more or less informative tree. **`Bool <: Real` in Julia**, so the
+  dispatch puts `::Bool` ahead of `::Real`; `normalize = true` means "the metric's scheme",
+  `normalize = 1` means "divide by one".
 
 ## Chunks
 

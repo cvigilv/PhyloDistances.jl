@@ -83,14 +83,14 @@ end
 # irrelevant here.
 struct NeedsUnrooted <: TreeMetric
     convention::Convention
-    normalize::Bool
+    normalize::Any
 end
 NeedsUnrooted() = NeedsUnrooted(TreeDistConvention(), false)
 PhyloDistances._compare(::NeedsUnrooted, ::TreeDistConvention, a, b) = 0.0
 
 struct NeedsRooted <: TreeMetric
     convention::Convention
-    normalize::Bool
+    normalize::Any
 end
 NeedsRooted() = NeedsRooted(TreeDistConvention(), false)
 PhyloDistances._compare(::NeedsRooted, ::TreeDistConvention, a, b) = 0.0
