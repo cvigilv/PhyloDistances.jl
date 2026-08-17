@@ -236,6 +236,16 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 (CHUNK-005): One NNI move changes **exactly one split**, so RF between a tree
   and its one-move perturbation is always exactly 2. Useful as a sharp check on any
   split-based metric, not just as a property of the generator.
+- 2026-08-17 (CHUNK-006): **TreeDist implements no branch-length-weighted Robinson-Foulds.**
+  Its RF family is `RobinsonFoulds` (topological), `InfoRobinsonFoulds`
+  (information-weighted) and `JaccardRobinsonFoulds`. Branch-length weighting belongs to
+  phangorn (`wRF.dist`). Metrics in that family therefore have no TreeDist reference, both
+  conventions coincide, and they must be validated by hand — or against phangorn, if it is
+  ever installed. The same likely applies to the Kuhner-Felsenstein branch score.
+- 2026-08-17 (CHUNK-006): Branch-length metrics sum over the **union** of the two trees'
+  splits, not the symmetric difference: a split in both trees contributes the *difference*
+  of its lengths. They also need `trivial = true` so pendant branches count. A tree without
+  branch lengths is rejected rather than yielding `NaN`.
 
 ## Chunks
 
@@ -447,12 +457,34 @@ Produce these live in the MCP Julia session and let them go when it exits.
   sets) and weighted RF (sum of branch-length differences over the symmetric difference).
   Include the normalized variants and document the normalizer used. Default convention is
   TreeDist's.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-004
 - **Verification strategy**: Identical trees → 0; a tree against its own NNI neighbor → 2;
-  maximally different binary trees on n tips → 2(n−3) unrooted; agreement with
-  hand-computed cases.
-- **Notes**: First metric on the critical path.
+  maximally different binary trees on n tips → 2(n−3) unrooted; agreement with TreeDist.
+- **Notes**: Lives in `src/robinsonfoulds.jl`, exporting `RobinsonFoulds` and
+  `WeightedRobinsonFoulds`.
+
+  **Validated against TreeDist 2.14.1**: nine hand-picked pairs embedded in the tests with
+  provenance, plus a randomized cross-check of **300 random pairs (4–25 taxa, RF 0–40) with
+  zero mismatches** on both raw and normalized values. The randomized harness is
+  reproducible from the scratch scripts but is not committed, since it needs R.
+
+  `normalizerinfo` is the tree's split count, so `normalize = true` divides by `n1 + n2`.
+  Two star trees give `0/0`; TreeDist returns `NaN` there and so do we, which a test pins.
+
+  **TreeDist has no branch-length-weighted RF** — its family is `RobinsonFoulds`,
+  `InfoRobinsonFoulds` (information-weighted, belongs with the information metrics) and
+  `JaccardRobinsonFoulds`. Branch-length weighting is phangorn's `wRF.dist`. So
+  `WeightedRobinsonFoulds` has **no reference implementation**; both conventions compute the
+  same standard definition and its tests are hand-computed.
+
+  **Deviation from this chunk's description**: it called weighted RF a sum "over the
+  symmetric difference". That is not the standard definition, which sums over the **union**,
+  so splits present in both trees still contribute their length *difference*. The union form
+  is implemented. It also includes **trivial splits**, so pendant branch lengths count.
+
+  A tree lacking branch lengths is **rejected** by `WeightedRobinsonFoulds` rather than
+  silently compared as `NaN`.
 
 ### CHUNK-007: quartet-distance-exact
 - **Description**: Quartet distance — the number of four-taxon subsets whose induced
@@ -777,6 +809,23 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Notes**: Read `R/Information.R`. Decide where a collection-level quantity sits in an
   API built around pairwise comparison.
 
+### CHUNK-032: revise-branch-length-metrics
+- **Description**: Revisit every metric that reads branch lengths — `WeightedRobinsonFoulds`
+  and the Kuhner-Felsenstein branch score — once the rest of the metric set is in place.
+  TreeDist implements none of them, so they ship on hand-computed tests alone; this chunk
+  gives them an independent reference by installing **phangorn** (`wRF.dist`, `KF.dist`) and
+  cross-checking, in the same style as the Robinson-Foulds comparison: generate trees in
+  Julia, write Newick plus the Julia value to a TSV, recompute in R, diff.
+  Reconcile any divergence as a bug or as a documented difference in definition.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-009, CHUNK-021
+- **Verification strategy**: Values agree with phangorn across a randomized sweep of tree
+  sizes and branch-length distributions, not only hand-picked cases. Any deliberate
+  divergence is recorded in the docstring and in Working knowledge.
+- **Notes**: Installing phangorn against the Nix-provided R needs the same scratch
+  `R_MAKEVARS_USER` treatment as TreeDist. Also settle here whether trivial splits belong in
+  each metric, and whether the normalizers chosen without a reference are the right ones.
+
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
 
@@ -785,6 +834,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-003 (tree-ingest-and-taxa) → next: CHUNK-004
 - 2026-08-17 CHUNK-004 (split-extraction) → next: CHUNK-005
 - 2026-08-17 CHUNK-005 (random-tree-generation) → next: CHUNK-006
+- 2026-08-17 CHUNK-006 (robinson-foulds) → next: CHUNK-007
 
 ## Open Questions
 
