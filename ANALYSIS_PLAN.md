@@ -91,6 +91,35 @@ These are user decisions, not open questions. They bind every chunk.
    - **`Distances.pairwise` does not preserve offset axes**; results are always 1-based and
      index by position. Accepted deliberately rather than diverging from upstream.
 
+## Reference implementation
+
+Every metric's default `:treedist` convention reproduces the R package
+[TreeDist](https://github.com/ms609/TreeDist), and the test fixture is validated against
+it. **Read TreeDist's implementation of a metric before writing it.** Deriving a metric
+from the literature alone yields plausible values that silently disagree with the
+reference — TreeDist normalizes Robinson-Foulds by the total splits present in the two
+trees, not by the `2(n-3)` an unaided reading suggests.
+
+Both forms are available on this machine:
+
+- **Source**, for formulations and edge cases:
+  `git clone --depth 1 https://github.com/ms609/TreeDist.git` into a scratch directory.
+  Metric implementations are in `R/tree_distance_*.R`, with the heavy lifting in
+  `src/*.cpp`.
+- **Installed CRAN build 2.14.1**, callable from `Rscript`, for generating reference
+  values. Compiling it against the Nix-provided R needs include and library paths supplied
+  through a scratch `R_MAKEVARS_USER` Makevars: gettext (`libintl`), zlib, and libuv,
+  plus `PKG_CONFIG_PATH` for the latter two.
+
+Two details of the reference that affect any value comparison:
+
+- `.FloorNumericalNoise` zeroes results below `sqrt(eps) * max(1, treesIndependentInfo)`,
+  so reference values are deliberately floored. Reproducing a formula is not sufficient to
+  reproduce a value.
+- TreeDist's `normalize` argument is `how`, accepting a function or a value, not just a
+  flag. This package exposes a `normalize::Bool` field; where a metric admits several
+  normalizers, document which one the flag selects.
+
 ## Target Outputs
 
 **Predictable (contract-style) outputs:**
@@ -169,6 +198,15 @@ Produce these live in the MCP Julia session and let them go when it exits.
   differing in the last ulp (`0.2 + 0.4 == 0.6000000000000001`). **Weighted RF, branch
   score and every other length-comparing metric must use `≈`, not `==`, when asserting that
   two rootings of one tree agree.**
+- 2026-08-17 (CHUNK-004, verified against TreeDist 2.14.1): Split extraction agrees with
+  `TreeDist::RobinsonFoulds` on seven hand-checked pairs, including a rooted tree against
+  its unrooted twin (RF = 0, confirming the root collapse) and a polytomy against a
+  resolved tree. Split counts match `TreeTools::as.Splits`.
+- 2026-08-17 (CHUNK-004): **TreeDist normalizes Robinson-Foulds by `n1 + n2`**, the total
+  number of splits present in the two trees — *not* by `2(n-3)`. The two agree for binary
+  trees and diverge as soon as either tree has a polytomy (verified: a 5-taxon star against
+  a resolved tree normalizes by 2, where `2(n-3)` would give 4). Expect the same pattern
+  for other metrics: derive normalizers from the reference, not from the literature.
 
 ## Chunks
 
@@ -560,7 +598,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
   convention against it.
 - **Status**: `not-started`
 - **Depends on**: CHUNK-009, CHUNK-011, CHUNK-012, CHUNK-014, CHUNK-015, CHUNK-017,
-  CHUNK-019, CHUNK-020
+  CHUNK-019, CHUNK-020, CHUNK-028, CHUNK-029, CHUNK-030, CHUNK-031
 - **Verification strategy**: Tests pass on a clean machine with no R installation and no
   network access.
 - **Notes**: This is the project's central reproducibility artifact. Any metric
@@ -646,6 +684,52 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `Base.Docs.meta`; doctests in the README example pass.
 - **Notes**: Consider running `/freshen-docstrings` and `/freshen-package` at this point
   rather than doing the audit by hand.
+
+<!-- CHUNK-028 onward were added after auditing TreeDist's exports; execution order
+     follows the Depends on fields, not chunk-ID order. All four precede CHUNK-021. -->
+
+### CHUNK-028: transfer-distance
+- **Description**: Transfer distance and its split-level form, following TreeDist's
+  `TransferDist` / `TransferDistSplits`. Measures how many taxa must be transferred to turn
+  one split into another, aggregated over an optimal matching.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-010
+- **Verification strategy**: Identical trees → 0; hand-computed cases; agreement with
+  `TreeDist::TransferDistance`.
+- **Notes**: Read `R/tree_distance_transfer.R` and `src/transfer_distance.cpp` first.
+
+### CHUNK-029: spr-distance
+- **Description**: Subtree prune-and-regraft distance, following TreeDist's `SPRDist`.
+  Exact SPR distance is NP-hard, so establish up front whether the reference computes an
+  exact value, a bound, or an approximation, and say so in the docstring.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-004
+- **Verification strategy**: Identical trees → 0; trees one SPR move apart → 1; agreement
+  with `TreeDist::SPRDist`.
+- **Notes**: Read `R/tree_distance_spr.R` and `src/spr*.cpp`. Likely the most expensive
+  metric in the set; check its complexity before committing to it.
+
+### CHUNK-030: hierarchical-mutual-information
+- **Description**: Hierarchical mutual information between trees, following TreeDist's
+  `HierarchicalMutualInfo`, treating a tree as a hierarchical partition rather than a flat
+  split set.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-013
+- **Verification strategy**: Identical trees maximize it; agreement with
+  `TreeDist::HierarchicalMutualInformation`.
+- **Notes**: Read `R/hierarchical_mutual_information.R` and `src/hmi.cpp`. This is a
+  similarity, so it subtypes `TreeSimilarity`, not `TreeMetric`.
+
+### CHUNK-031: consensus-information
+- **Description**: The information content of the consensus of a set of trees, following
+  TreeDist's `ConsensusInfo`. Operates on a tree collection rather than a pair, so it does
+  not fit the metric interface and belongs as a standalone function.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-013
+- **Verification strategy**: A set of identical trees gives the information of that tree;
+  agreement with `TreeDist::ConsensusInfo`.
+- **Notes**: Read `R/Information.R`. Decide where a collection-level quantity sits in an
+  API built around pairwise comparison.
 
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->

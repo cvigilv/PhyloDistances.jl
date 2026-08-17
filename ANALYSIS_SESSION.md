@@ -67,10 +67,38 @@ comparison scripts can use it too. Verify that generated trees are valid (correc
 count, every internal node has ≥2 children, no repeated labels) and reproducible under a
 fixed seed.
 
-CHUNK-006 (robinson-foulds) is the chunk after, and is largely assembly over `symdiff`.
+CHUNK-006 (robinson-foulds) is the chunk after. The distance itself is
+`length(symdiff(s1, s2))`, already verified against TreeDist; the work is the normalizer
+(`n1 + n2`), the weighted variant, and `Distances.result_type`.
+
+Four further metric chunks were added after auditing TreeDist's exports — CHUNK-028
+(transfer distance), CHUNK-029 (SPR), CHUNK-030 (hierarchical mutual information),
+CHUNK-031 (consensus information). Chunk-ID order no longer matches execution order past
+CHUNK-020; follow the `Depends on` fields.
+
+## Reference implementation is now available
+
+TreeDist is the reference for every metric's default convention, and **its source must be
+read before implementing one**. Both forms are set up:
+
+- **Source**: `git clone --depth 1 https://github.com/ms609/TreeDist.git` into a scratch
+  directory. Formulations in `R/tree_distance_*.R`, heavy lifting in `src/*.cpp`.
+- **Installed CRAN build 2.14.1**, callable from `Rscript`. Compiling it against the Nix R
+  needed gettext, zlib and libuv paths supplied via a scratch `R_MAKEVARS_USER` Makevars.
+
+Split extraction has been cross-checked against it: seven hand-picked pairs agree with
+`TreeDist::RobinsonFoulds`, including a rooted tree against its unrooted twin (RF = 0) and
+a polytomy against a resolved tree. Split counts match `TreeTools::as.Splits`.
 
 ## Watch out for
 
+- **Derive normalizers from TreeDist, never from the literature.** TreeDist normalizes
+  Robinson-Foulds by `n1 + n2`, the total splits present in the two trees — not by
+  `2(n-3)`. The two agree for binary trees and diverge as soon as either has a polytomy.
+  Expect the same trap in other metrics.
+- **`.FloorNumericalNoise` zeroes reference values** below
+  `sqrt(eps) * max(1, treesIndependentInfo)`. Reproducing a formula is not enough to
+  reproduce a value.
 - **Length arithmetic across rootings is inexact.** Recovering an unrooted branch by
   addition is a floating-point sum: `0.2 + 0.4 == 0.6000000000000001`. A rooted tree and the
   same tree written unrooted give lengths differing in the last ulp, so weighted RF, branch
