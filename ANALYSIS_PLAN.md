@@ -273,6 +273,15 @@ Produce these live in the MCP Julia session and let them go when it exits.
   root into a **single-branch pass-through node**, whose cluster duplicates its only child's.
   Counting both inflated every distance involving a rooted input. Any traversal that
   enumerates clusters must skip nodes with fewer than two branches below them.
+- 2026-08-17 (CHUNK-006, validation): Robinson-Foulds is **bit-for-bit identical** to
+  TreeDist across 2,140 cases — exact integers, bitwise floats, `NaN` meeting `NaN` — using
+  `validation/crosscheck.jl`, which exits non-zero on any difference. Re-run it for every
+  metric.
+- 2026-08-17 (CHUNK-006, validation trap): **Compare in the direction R → Julia.** R's
+  `as.numeric` does not reliably round-trip its own `%.17g` output, landing half an ulp away
+  on values such as `92/94`. Passing Julia's output through it reported two differences that
+  did not exist, and would equally have hidden real ones. Julia's parser round-trips
+  correctly, so R writes and Julia compares.
 
 ## Chunks
 

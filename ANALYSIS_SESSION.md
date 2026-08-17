@@ -94,6 +94,19 @@ before relying on one.
 
 After that, CHUNK-008 (validation of RF and quartet) closes the critical path.
 
+## Values are identical to TreeDist, not merely close
+
+`validation/crosscheck.jl` compares the two implementations on 2,140 deliberately awkward
+cases — star trees, caterpillars, polytomies at three severities on one and both sides,
+rooted against unrooted, identical against maximally perturbed — with **no tolerance**:
+integers exactly, floats bitwise, `NaN` meeting `NaN`. **Zero mismatches.** It exits non-zero
+if anything differs, so it can gate a release, and should be re-run for every metric.
+
+**Compare in the direction R → Julia.** R's `as.numeric` does not reliably round-trip its own
+`%.17g` output — it lands half an ulp away on values such as `92/94`. An earlier harness fed
+Julia's output through it and reported two differences that did not exist; it would equally
+have hidden real ones. R writes, Julia parses and compares.
+
 ## Performance discipline established
 
 Metrics use the most efficient algorithm available, taking TreeDist's choice as the starting
