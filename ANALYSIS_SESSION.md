@@ -8,54 +8,57 @@
 
 CHUNK-002: design-distance-api
 
-`src/interface.jl` defines the surface every metric must fit: a `TreeMetric` supertype, a
-`Convention` hierarchy selecting between published formulations, the `requiresrooted` and
-`issimilarity` traits, `compare`, and a naive `pairwise`. No concrete metric exists yet —
-this chunk is the contract, verified with dummy metrics defined inside the test suite.
+`src/interface.jl` defines the surface every metric must fit, built on the **Distances.jl**
+interface rather than a private one: `TreeMetric <: Distances.SemiMetric`, applied by
+calling it, `m(t1, t2)`. `pairwise`, `pairwise!`, `colwise`, `colwise!`, `evaluate` and
+`result_type` all work unchanged and are re-exported. Alongside it are a `Convention`
+hierarchy selecting between published formulations, the `requiresrooted` trait, and
+`TreeSimilarity` for quantities that are largest on identical trees. No concrete metric
+exists yet — this chunk is the contract, verified with dummy metrics defined in the tests.
 
-**Adding a metric requires exactly one method:**
-`PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`. Every other part of the
-interface has a fallback, and the two that can legitimately be missing (`:primary`
-convention, `normalizer`) fail with a message naming the metric rather than a `MethodError`.
+**Adding a metric requires:** `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`,
+`convention` and `normalize` fields (or overrides of `convention`/`isnormalized`), and
+`Distances.result_type` if the result is not `Float64`. Optional: a `PrimaryConvention`
+method, `normalizer`, `requiresrooted`.
 
 ## Key decisions made
 
-- **`compare(metric, t1, t2)` is the single entry point.** Metrics are deliberately *not*
-  callable — `m(t1, t2)` does not work, and a test asserts no call method exists. One way to
-  apply a metric, not two.
-- **Exported: `TreeMetric`, `Convention`, `TreeDistConvention`, `PrimaryConvention`,
-  `compare`, `pairwise`.** The traits (`normalizer`, `requiresrooted`, `issimilarity`) are
-  `public` but unexported (Julia 1.11+ `public` keyword) since they are extension points
-  rather than everyday calls. `pairwise` collides with `Distances.pairwise` and
-  `StatsBase.pairwise`; it is exported anyway and the collision is deferred — see the plan's
-  Open Questions. Changing this after release would be breaking.
-- **Metric parameters are fields of the metric type**, not call keywords — so JRF's `k` and
-  Kendall-Colijn's λ live on the type, and a constructed metric specifies the computation
-  completely. `convention` and `normalize` are the only keywords, which is what lets
-  `pairwise` forward everything without knowing about any specific metric.
-- **`convention` accepts a symbol or a `Convention` instance.** `Convention(::Symbol)`
-  resolves `:treedist`/`:primary` at the public boundary so internals dispatch on singleton
-  types; `Base.Symbol(::Convention)` gives the reverse for error messages.
-- **Normalization is a division.** A metric defines `normalizer(m, conv, t1, t2)` and
-  `compare` divides by it. A metric with no normalization throws rather than silently
-  returning the raw value.
-- **`pairwise` honors generic axes** — the result's axes track the input's, tested against
-  `OffsetVector`. It fills one triangle and mirrors, relying on the documented symmetry of
-  every metric. Element type is taken from the diagonal, which is part of the result, so no
-  comparison is computed and discarded.
-- **`OffsetArrays` added as a test-only dependency** (`test/Project.toml`) to enforce the
-  generic-indexing contract.
+- **Distances.jl is the interface, not a model to copy.** An earlier iteration reimplemented
+  `PreMetric`/`SemiMetric`/`pairwise` badly; that was replaced by the real dependency.
+  Metrics are applied by calling them and there are **no call keywords** — this is forced,
+  not stylistic, because `pairwise` applies a metric without keywords, so anything not on
+  the type is unreachable through it.
+- **Every variant selector is a field**: `convention`, `normalize`, and metric-specific
+  parameters such as JRF's `k` or Kendall-Colijn's λ. A constructed metric specifies the
+  computation completely.
+- **Similarities sit outside the Distances hierarchy**, subtyping `TreeSimilarity` with
+  their own `Distances.pairwise` methods. `PreMetric` requires `d(x,x) == 0`, and
+  `SemiMetric` is actively dangerous: `pairwise` *assumes* the zero diagonal rather than
+  computing it. Verified — a similarity declared `SemiMetric` yields
+  `[0 98 95; 98 0 97; 95 97 0]` where the truth is `[100 98 95; 98 100 97; 95 97 100]`.
+- **`Distances.result_type` must be defined by every concrete metric** whose result is not
+  `Float64`. Its default infers from `one(eltype(a))`, which assumes numeric observations
+  and throws outright for trees.
+- **Distances' functions are re-exported**, so `using PhyloDistances, Distances` is clean:
+  the names refer to identical bindings, which cannot clash. Verified.
+- **`Distances.pairwise` discards offset axes** — results are 1-based and index by position.
+  Accepted rather than diverging from upstream; a test pins the behavior so a change
+  upstream is noticed.
+- **`TreeMetric <: Distances.SemiMetric`, not `Metric`** — the safe common denominator,
+  since not every tree distance satisfies the triangle inequality. Promoting individual
+  metrics is an open question.
 - **No rooting stub.** Only the `requiresrooted` trait is defined here. CHUNK-003 adds the
-  actual precondition check into `compare`; there is deliberately no placeholder to
-  mistake for working code.
+  actual precondition check; there is deliberately no placeholder to mistake for working
+  code.
 
 ## State of the codebase
 
 - Files created: `src/interface.jl`, `test/test_interface.jl`
 - Files modified: `src/PhyloDistances.jl`, `test/runtests.jl`, `test/Project.toml`,
-  `README.md`
+  `Project.toml`, `README.md`
+- Dependencies added: `Distances` (main), `Distances` + `OffsetArrays` (test-only)
 - Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — 54 tests
+- Test suite passes: yes — 59 tests
 - Entry points: no analysis entry point yet.
   `julia --project=. -e 'using Pkg; Pkg.test()'` runs the suite.
 - Known issues: none
@@ -69,8 +72,10 @@ and a label→index map for one tree, and a check that two trees span the same t
 throws naming the differing labels. This chunk also implements the rooting policy: a
 predicate detecting whether a parsed tree is rooted, and a precondition helper that compares
 it against `requiresrooted(metric)`, **warns** naming tree, metric and conversion, and
-applies that conversion — or throws where no defensible conversion exists. Wire that helper
-into `compare` in `src/interface.jl`.
+applies that conversion — or throws where no defensible conversion exists.
+
+Wire that helper into `_apply` in `src/interface.jl`, which is the single funnel every
+metric passes through.
 
 All traversal must go through AbstractTrees.jl, not `NewickTree.Node` internals, so the
 package accepts any conforming node type.
@@ -86,11 +91,11 @@ package accepts any conforming node type.
   applied. Where no such statement can be made, throw.
 - **The critical path is CHUNK-001 → CHUNK-008**, ending in validated Robinson-Foulds and
   quartet distance, which are needed for immediate use. Nothing past CHUNK-008 is urgent.
+- **Dummy metrics in `test/test_interface.jl` use integers as stand-in trees**, which is
+  sound only because the interface performs no tree operations. Once CHUNK-003 wires the
+  rooting check into `_apply`, those dummies will need real trees or a rooting predicate
+  that tolerates them — expect to revisit that file.
 - **`test/fixtures/` and `scripts/` hold `.gitkeep` placeholders.** Delete each when the
   directory gains real content.
 - **Julia 1.12 is the declared floor and there is no LTS back-support.** Use 1.12 features
   freely; do not add 1.10 compatibility shims.
-- **Dummy metrics in `test/test_interface.jl` use integers as stand-in trees**, which is
-  sound only because the interface performs no tree operations. Once CHUNK-003 wires the
-  rooting check into `compare`, those dummies will need real trees or a metric declaring
-  `requiresrooted` in a way the check tolerates — expect to revisit that file.

@@ -27,11 +27,12 @@ form that critical path; everything after CHUNK-008 is expansion.
 
 - **Language**: Julia 1.12 (minimum supported version; no LTS back-support)
 - **Key libraries**: NewickTree.jl (Newick parsing), AbstractTrees.jl (traversal
-  interface). Anticipated: a bitset/`BitVector`-based split representation,
-  Combinatorics.jl for quartet enumeration. Test-only: Test, Random, StableRNGs (or
-  seeded `Random.Xoshiro`) for reproducible synthetic trees. Optional weak dependency:
-  Makie for visualization extensions. **No assignment-solver dependency** — the optimal
-  assignment routine is vendored (see CHUNK-010).
+  interface), Distances.jl (the metric interface these types implement — see Design
+  decisions). Anticipated: a bitset/`BitVector`-based split representation,
+  Combinatorics.jl for quartet enumeration. Test-only: Test, Distances, OffsetArrays,
+  Random, StableRNGs (or seeded `Random.Xoshiro`) for reproducible synthetic trees.
+  Optional weak dependency: Makie for visualization extensions. **No assignment-solver
+  dependency** — the optimal assignment routine is vendored (see CHUNK-010).
 - **Environment file**: `Project.toml` (to be generated in CHUNK-001)
 - **Project maturity target**: `package`
 - **Package name(s)**: PhyloDistances.jl
@@ -72,6 +73,23 @@ These are user decisions, not open questions. They bind every chunk.
    generalized-RF family is implemented inside PhyloDistances rather than taken from
    Hungarian.jl, which is unmaintained relative to the pace of Julia's evolution. It is
    internal, not exported, and covered by its own tests against brute-force enumeration.
+
+4. **Distances.jl is the interface, not a model to imitate.** Metrics subtype
+   `Distances.SemiMetric` and are applied by calling them, `m(t1, t2)`, which is what makes
+   `pairwise`, `pairwise!`, `colwise`, `colwise!`, `evaluate` and `result_type` work
+   unchanged. Consequences that bind every metric chunk:
+   - **Every variant selector is a field**, never a call keyword — `convention`,
+     `normalize`, and metric-specific parameters. A metric applied through `pairwise` gets
+     no keywords, so anything not on the type is unreachable.
+   - **Concrete metrics must define `Distances.result_type`** when the result is not
+     `Float64`. Distances infers it from `one(eltype(a))`, which assumes numeric
+     observations; trees are not, so the default would throw.
+   - **Similarities must not subtype the Distances hierarchy.** `PreMetric` requires
+     `d(x,x) == 0`, and `SemiMetric` is worse than inaccurate — `pairwise` assumes the zero
+     diagonal instead of computing it, silently reporting zero self-similarity. They
+     subtype `TreeSimilarity`, which carries its own `pairwise` method.
+   - **`Distances.pairwise` does not preserve offset axes**; results are always 1-based and
+     index by position. Accepted deliberately rather than diverging from upstream.
 
 ## Target Outputs
 
@@ -121,12 +139,17 @@ Produce these live in the MCP Julia session and let them go when it exits.
   not support the 1.10 LTS. Language features and stdlib methods introduced up to 1.12 may
   be used freely; there is no need to check anything against 1.10, and `julia +lts` is not
   part of this project's verification loop.
-- 2026-08-17 (CHUNK-002): Adding a metric takes **one** method,
-  `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`; every other piece of the
-  interface has a fallback. Metric *parameters* belong as fields of the metric type, never
-  as keywords to the call — `convention` and `normalize` are the only keywords, and
-  `pairwise` forwards exactly those. The sole entry point is `compare(metric, t1, t2)`;
-  metrics are intentionally not callable, so do not reintroduce `m(t1, t2)`.
+- 2026-08-17 (CHUNK-002): The package implements the **Distances.jl** interface rather than
+  its own. A metric is applied by calling it, `m(t1, t2)`, and there are **no call
+  keywords** — `convention`, `normalize` and every metric-specific parameter is a field of
+  the metric type. This is forced, not stylistic: `pairwise` applies a metric with no
+  keywords, so anything not on the type is unreachable through it.
+- 2026-08-17 (CHUNK-002): Two Distances.jl behaviors that will bite if forgotten.
+  (a) `Distances.result_type` infers from `one(eltype(a))` and therefore **throws for
+  non-numeric observations**; every concrete metric must define it. (b) `pairwise` on a
+  `SemiMetric` **assumes** the zero diagonal instead of computing it — verified, a
+  similarity declared `SemiMetric` reports zero self-similarity. Similarities therefore
+  subtype `TreeSimilarity`, outside the Distances hierarchy.
 
 ## Chunks
 
@@ -179,39 +202,35 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Verification strategy**: A dummy test metric defined in the test suite dispatches
   correctly through every documented entry point, including the all-pairs path, both
   `convention` values, and both rooting traits.
-- **Notes**: Lives in `src/interface.jl`. **Adding a metric requires exactly one method:**
-  `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`. Everything else — the
-  `:primary` convention, `normalizer`, `requiresrooted`, `issimilarity` — has a fallback,
-  and the first two fail with a message naming the metric rather than a `MethodError`.
+- **Notes**: Lives in `src/interface.jl`. Metrics implement the **Distances.jl** interface:
+  `TreeMetric <: Distances.SemiMetric`, applied by calling them, `m(t1, t2)`. `pairwise`,
+  `pairwise!`, `colwise`, `colwise!`, `evaluate` and `result_type` all work unchanged and
+  are re-exported, so a user loading PhyloDistances and Distances together sees one set of
+  functions rather than a clash (verified: the bindings are identical).
 
-  The single entry point is **`compare(metric, t1, t2; convention, normalize)`**. Metrics
-  are deliberately **not callable**: `m(t1, t2)` was removed so there is one way to apply a
-  metric, and a test asserts no call method exists.
+  **Adding a metric requires:** `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`,
+  `convention` and `normalize` fields (or overrides of `convention`/`isnormalized`), and
+  `Distances.result_type` if the result is not `Float64`. Optional: a `PrimaryConvention`
+  method, `normalizer`, `requiresrooted`. The first two omissions fail with a message
+  naming the metric rather than a `MethodError`.
 
-  Exported: `TreeMetric`, `Convention`, `TreeDistConvention`, `PrimaryConvention`,
-  `compare`, `pairwise`. The traits (`normalizer`, `requiresrooted`, `issimilarity`) are
-  `public` but unexported — they are extension points, not everyday calls. `pairwise`
-  collides with Distances.jl; exporting it anyway is a deliberate choice, with the collision
-  deferred (see Open Questions).
+  **Similarities subtype `TreeSimilarity`, outside the Distances hierarchy**, with their own
+  `Distances.pairwise` methods. Demonstrated hazard: a similarity declared `SemiMetric`
+  returns `[0 98 95; 98 0 97; 95 97 0]` where the truth is `[100 98 95; ...]` — `pairwise`
+  assumes the zero diagonal rather than computing it.
 
-  `convention` accepts the symbols `:treedist`/`:primary` **or** a `Convention` instance;
-  `Convention(::Symbol)` resolves at the boundary so internals dispatch on singleton types.
-  `Base.Symbol(::Convention)` gives the reverse, used for error messages.
+  Exported: `TreeMetric`, `TreeSimilarity`, `TreeComparison`, `Convention`,
+  `TreeDistConvention`, `PrimaryConvention`, plus the six re-exported Distances functions.
+  Traits (`convention`, `isnormalized`, `normalizer`, `requiresrooted`, `issimilarity`) are
+  `public` but unexported — extension points, not everyday calls.
 
-  Normalization is a division: metrics define `normalizer(m, conv, t1, t2)` and
-  `compare` divides by it. Metric parameters (JRF's `k`, Kendall-Colijn's λ) are **fields
-  of the metric type**, not keywords, so `pairwise` need not thread them.
+  `Distances.pairwise` **discards offset axes**; results are 1-based and index by position.
+  Accepted deliberately, and a test pins the behavior so an upstream change is noticed.
 
-  `pairwise` honors generic axes — result axes track the input, tested against
-  `OffsetVector`. It fills one triangle and mirrors, relying on the documented symmetry of
-  every metric. Element type comes from the diagonal, which is part of the result, so no
-  comparison is evaluated and discarded. Empty input yields a 0×0 `Float64` matrix.
-
-  `OffsetArrays` added as a **test-only** dependency (`test/Project.toml`) to enforce the
-  generic-indexing contract.
+  `OffsetArrays` and `Distances` are test-only dependencies in `test/Project.toml`.
 
   The rooting precondition is *not* implemented here — only the `requiresrooted` trait it
-  will consult. CHUNK-003 adds the check into `compare`; there is deliberately no stub.
+  will consult. CHUNK-003 adds the check; there is deliberately no stub.
 
 ### CHUNK-003: tree-ingest-and-taxa
 - **Description**: Newick ingest via NewickTree.jl, plus canonical taxon indexing: given a
@@ -580,10 +599,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
   bitsets are indexed by the canonical taxon ordering, where a 1-based assumption is
   natural. Recommendation: declare it explicitly with `Base.require_one_based_indexing`
   there rather than leaving it implicit, and keep the public-facing `pairwise` generic.
-- **Distances.jl name collision.** `pairwise` is exported despite colliding with
-  `Distances.pairwise` (and `StatsBase.pairwise`); a user loading both will need to qualify.
-  Deferred deliberately. When it is addressed, the options are: unexport `pairwise` again,
-  rename it, or subtype `Distances.SemiMetric` and implement their interface — the last
-  would make tree metrics usable by ecosystem code (clustering, MDS) at the cost of a
-  dependency. Revisit when the tree-space embedding work in CHUNK-025 shows what is actually
-  needed. Note that changing this after release is breaking.
+- **StatsBase name collision.** Resolved for Distances.jl by implementing its interface and
+  re-exporting its functions, so co-loading is clean. `StatsBase.pairwise` is a *different*
+  binding and would still clash for a user loading StatsBase too. Low priority — check
+  whether it bites during the tree-space embedding work in CHUNK-025.
+- **Triangle inequality per metric.** `TreeMetric <: Distances.SemiMetric`, the safe common
+  denominator. Several metrics (RF, quartet, path) do satisfy the metric axioms, and
+  ecosystem code that requires `Distances.Metric` — nearest-neighbor structures, some
+  clustering — will not accept them as things stand. Decide per metric whether to subtype
+  `Distances.Metric` directly once each is implemented and its properties are established
+  (CHUNK-021 tests the axioms). Changing this after release is breaking.
