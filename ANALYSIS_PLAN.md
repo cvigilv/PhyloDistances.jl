@@ -196,10 +196,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
   induce the same bipartition — while an **unrooted tree given to a rooted metric throws**,
   since no canonical rooting exists. Split extraction must canonicalize so that the
   ignored root really does drop out.
-- 2026-08-17 (CHUNK-003): `NewickTree.degree` is graph degree, not child count:
-  `degree(leaf) == 2`. Use `length(AbstractTrees.children(node))`. Separately,
-  AbstractTrees and NewickTree both export `children`, `getroot`, `isroot` and
-  `print_tree`, so the module imports the modules rather than their names.
+- 2026-08-17 (CHUNK-003, **corrected in CHUNK-005**): AbstractTrees and NewickTree both
+  export `children`, `getroot`, `isroot` and `print_tree`, so the module imports the
+  modules rather than their names. An earlier note here claimed `NewickTree.degree` is
+  graph degree rather than child count; that was **wrong**, from testing an internal node
+  and calling it a leaf. `degree(n) = isleaf(n) ? 0 : length(n.children)` — it is child
+  count, and gives 0 for a leaf. Either it or `length(AbstractTrees.children(node))` is
+  fine.
 - 2026-08-17 (CHUNK-004): Splits are **inherently unrooted**: canonical orientation (first
   taxon never a member) collapses a rooted tree's two root branches into one split whose
   length is their **sum**. So a rooted binary tree on n taxa yields **n−3** splits, the same
@@ -225,6 +228,14 @@ Produce these live in the MCP Julia session and let them go when it exits.
   relative to the more or less informative tree. **`Bool <: Real` in Julia**, so the
   dispatch puts `::Bool` ahead of `::Real`; `normalize = true` means "the metric's scheme",
   `normalize = 1` means "divide by one".
+- 2026-08-17 (CHUNK-005): `NewickTree.Node(id, data)` leaves **`parent` and `children`
+  undefined**, not empty. Build with `push!(parent, child)` or the three-argument
+  `Node(id, data, parent)`; assigning `node.children` on a fresh node raises
+  `UndefRefError`. Also, `===` has no curried one-argument form the way `==` does —
+  `findfirst(===(x), v)` throws `ArgumentError: ===: too few arguments`.
+- 2026-08-17 (CHUNK-005): One NNI move changes **exactly one split**, so RF between a tree
+  and its one-move perturbation is always exactly 2. Useful as a sharp check on any
+  split-based metric, not just as a property of the generator.
 
 ## Chunks
 
@@ -407,12 +418,29 @@ Produce these live in the MCP Julia session and let them go when it exits.
   returning the perturbed tree). The perturbation generator gives approximate ground truth
   — distance should increase monotonically in expectation with k — which is the main tool
   for validating metrics that have no closed form.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-003
 - **Verification strategy**: Generated trees are valid (correct tip count, every internal
   node has ≥2 children, no repeated labels); output is reproducible under a fixed seed.
-- **Notes**: Test-support code, but it belongs in `src/` (documented and tested) rather
-  than `test/` so the benchmark and comparison scripts can use it too.
+- **Notes**: Lives in `src/random.jl`. Exports `randomtree` and `perturb`; `nni!` is
+  `public`. `Random` added as a dependency (stdlib), in both the package and test projects.
+
+  `randomtree(rng, n)` draws **uniformly** from unrooted binary topologies by repeatedly
+  splitting a uniformly chosen branch — each of a k-taxon tree's `2k-3` branches is an
+  equally likely attachment point for taxon k+1. Verified empirically: 200 draws on 6 taxa
+  gave 87 distinct topologies of the 105 possible, against ~89 expected under uniformity.
+
+  **`perturb` gives RF exactly 2 for one move**, with zero variance — an interchange
+  relocates a single subtree, so precisely one split is replaced. This is a sharp
+  correctness test and is asserted in the suite. Mean RF then rises monotonically with the
+  move count and saturates just under the maximum `2(n-3)`; moves are independent, so a
+  later one can undo an earlier one and `k` moves means *at most* `k` interchanges apart.
+
+  **Building `NewickTree.Node` trees**: `Node(id, data)` leaves **both `parent` and
+  `children` undefined** (`new{I,T}(id, data)` sets only two of four fields). Use
+  `push!(parent, child)`, which creates `children` if absent and sets `child.parent`;
+  writing `parent.children` directly on a fresh node raises `UndefRefError`. The
+  three-argument `Node(id, data, parent)` pushes for you.
 
 ### CHUNK-006: robinson-foulds
 - **Description**: Robinson-Foulds distance (symmetric difference of non-trivial split
@@ -756,6 +784,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-002 (design-distance-api) → next: CHUNK-003
 - 2026-08-17 CHUNK-003 (tree-ingest-and-taxa) → next: CHUNK-004
 - 2026-08-17 CHUNK-004 (split-extraction) → next: CHUNK-005
+- 2026-08-17 CHUNK-005 (random-tree-generation) → next: CHUNK-006
 
 ## Open Questions
 
