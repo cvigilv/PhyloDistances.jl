@@ -31,6 +31,11 @@ and either carry `convention` and `normalize` fields or override [`convention`](
   - [`normalizer`](@ref), to support `normalize = true`;
   - [`requiresrooted`](@ref), if the metric is defined on rooted trees;
   - `Distances.result_type`, if the result is not `Float64`.
+
+The rooting of both trees is reconciled against [`requiresrooted`](@ref) before
+`_compare` is called, so an implementation may assume the rooting it declares. Obtaining
+its indexing from [`taxonindex`](@ref)`(t1, t2)` likewise validates that the trees span
+the same taxa.
 """
 abstract type TreeMetric <: Distances.SemiMetric end
 
@@ -182,6 +187,7 @@ function _compare(comparison::TreeComparison, convention::Convention, t1, t2)
 end
 
 function _apply(comparison::TreeComparison, t1, t2)
+    _checkrooting(comparison, t1, t2)
     conv = convention(comparison)
     raw = _compare(comparison, conv, t1, t2)
     isnormalized(comparison) || return raw

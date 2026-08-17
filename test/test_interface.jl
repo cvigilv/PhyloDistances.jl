@@ -4,8 +4,17 @@ using PhyloDistances
 using PhyloDistances: convention, isnormalized, issimilarity, normalizer, requiresrooted
 using Test
 
-# The interface performs no tree operations, so integers stand in for trees throughout:
-# they make the expected value of every call obvious by inspection.
+# Applying a metric reconciles the rooting of its inputs, so these need real trees. The
+# dummy metrics below reduce a tree to its leaf count, which keeps the expected value of
+# every call obvious by inspection.
+
+"""A star tree on `n` taxa: root of degree `n`, hence unrooted for `n >= 3`."""
+star(n) = readnw("(" * join(("T$i:1.0" for i in 1:n), ",") * ");")
+
+"""A tree on `n` taxa whose root has two children, hence rooted."""
+rooted(n) = readnw("((" * join(("T$i:1.0" for i in 1:(n - 1)), ",") * "):1.0,T$n:1.0);")
+
+nleaves(tree) = length(PhyloDistances.taxonlabels(tree))
 
 """Absolute difference; doubled under the primary convention, normalized by 10."""
 struct Gap{C<:Convention} <: TreeMetric
@@ -14,8 +23,8 @@ struct Gap{C<:Convention} <: TreeMetric
 end
 Gap(; convention = TreeDistConvention(), normalize = false) =
     Gap(Convention(convention), normalize)
-PhyloDistances._compare(::Gap, ::TreeDistConvention, a, b) = abs(a - b)
-PhyloDistances._compare(::Gap, ::PrimaryConvention, a, b) = 2 * abs(a - b)
+PhyloDistances._compare(::Gap, ::TreeDistConvention, a, b) = abs(nleaves(a) - nleaves(b))
+PhyloDistances._compare(::Gap, ::PrimaryConvention, a, b) = 2 * abs(nleaves(a) - nleaves(b))
 PhyloDistances.normalizer(::Gap, ::Convention, a, b) = 10
 Distances.result_type(m::Gap, ::Type, ::Type) = isnormalized(m) ? Float64 : Int
 
@@ -26,7 +35,8 @@ struct TreeDistOnly <: TreeMetric
 end
 TreeDistOnly(; convention = TreeDistConvention(), normalize = false) =
     TreeDistOnly(Convention(convention), normalize)
-PhyloDistances._compare(::TreeDistOnly, ::TreeDistConvention, a, b) = abs(a - b)
+PhyloDistances._compare(::TreeDistOnly, ::TreeDistConvention, a, b) =
+    abs(nleaves(a) - nleaves(b))
 
 """Largest on identical inputs, so a similarity rather than a distance."""
 struct Closeness <: TreeSimilarity
@@ -35,7 +45,8 @@ struct Closeness <: TreeSimilarity
 end
 Closeness(; convention = TreeDistConvention(), normalize = false) =
     Closeness(Convention(convention), normalize)
-PhyloDistances._compare(::Closeness, ::TreeDistConvention, a, b) = 100 - abs(a - b)
+PhyloDistances._compare(::Closeness, ::TreeDistConvention, a, b) =
+    100 - abs(nleaves(a) - nleaves(b))
 Distances.result_type(::Closeness, ::Type, ::Type) = Int
 
 """Carries a metric-specific parameter and is defined on rooted trees."""
@@ -46,7 +57,8 @@ struct Scaled <: TreeMetric
 end
 Scaled(factor; convention = TreeDistConvention(), normalize = false) =
     Scaled(factor, Convention(convention), normalize)
-PhyloDistances._compare(m::Scaled, ::TreeDistConvention, a, b) = m.factor * abs(a - b)
+PhyloDistances._compare(m::Scaled, ::TreeDistConvention, a, b) =
+    m.factor * abs(nleaves(a) - nleaves(b))
 PhyloDistances.requiresrooted(::Scaled) = true
 
 @testset "Convention" begin
@@ -90,50 +102,50 @@ end
 
 @testset "applying a metric" begin
     @testset "entry points agree" begin
-        @test Gap()(3, 10) == 7
-        @test evaluate(Gap(), 3, 10) == 7
-        @test evaluate(Closeness(), 3, 10) == 93
+        @test Gap()(star(3), star(10)) == 7
+        @test evaluate(Gap(), star(3), star(10)) == 7
+        @test evaluate(Closeness(), star(3), star(10)) == 93
     end
 
     @testset "symmetry" begin
-        @test Gap()(3, 10) == Gap()(10, 3)
+        @test Gap()(star(3), star(10)) == Gap()(star(10), star(3))
     end
 
     @testset "convention is a field, not a keyword" begin
-        @test Gap(; convention = :treedist)(3, 10) == 7
-        @test Gap(; convention = :primary)(3, 10) == 14
-        @test Gap(; convention = PrimaryConvention())(3, 10) == 14
-        @test Gap()(3, 10) == Gap(; convention = :treedist)(3, 10)
+        @test Gap(; convention = :treedist)(star(3), star(10)) == 7
+        @test Gap(; convention = :primary)(star(3), star(10)) == 14
+        @test Gap(; convention = PrimaryConvention())(star(3), star(10)) == 14
+        @test Gap()(star(3), star(10)) == Gap(; convention = :treedist)(star(3), star(10))
     end
 
     @testset "normalization is a field, not a keyword" begin
-        @test Gap(; normalize = true)(3, 10) == 0.7
+        @test Gap(; normalize = true)(star(3), star(10)) == 0.7
 
         # Normalization applies to the value the convention produced.
-        @test Gap(; convention = :primary, normalize = true)(3, 10) == 1.4
+        @test Gap(; convention = :primary, normalize = true)(star(3), star(10)) == 1.4
     end
 
     @testset "metric parameters live on the metric" begin
-        @test Scaled(3)(1, 5) == 12
-        @test Scaled(10)(1, 5) == 40
+        @test Scaled(3)(rooted(3), rooted(7)) == 12
+        @test Scaled(10)(rooted(3), rooted(7)) == 40
     end
 
     @testset "unimplemented convention reports the metric and the convention" begin
-        @test TreeDistOnly()(3, 10) == 7
+        @test TreeDistOnly()(star(3), star(10)) == 7
         @test_throws "TreeDistOnly does not implement the :primary convention" begin
-            TreeDistOnly(; convention = :primary)(3, 10)
+            TreeDistOnly(; convention = :primary)(star(3), star(10))
         end
     end
 
     @testset "missing normalization is reported, not silently skipped" begin
         @test_throws "no normalization is defined for TreeDistOnly" begin
-            TreeDistOnly(; normalize = true)(3, 10)
+            TreeDistOnly(; normalize = true)(star(3), star(10))
         end
     end
 end
 
 @testset "pairwise" begin
-    trees = [0, 3, 10]
+    trees = [star(3), star(6), star(13)]
 
     @testset "metric: agrees with repeated application" begin
         D = pairwise(Gap(), trees)
@@ -158,7 +170,7 @@ end
     end
 
     @testset "two-collection form" begin
-        @test pairwise(Closeness(), [0, 3], [10]) == reshape([90, 93], 2, 1)
+        @test pairwise(Closeness(), [star(3), star(6)], [star(13)]) == reshape([90, 93], 2, 1)
     end
 
     @testset "element type follows result_type" begin

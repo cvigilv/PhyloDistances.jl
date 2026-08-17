@@ -55,6 +55,39 @@ declaring one a `SemiMetric` would be actively wrong: `pairwise` takes the zero 
 faith rather than computing it, so the result would report zero self-similarity. Both kinds
 are used identically; only the type hierarchy differs.
 
+### Taxa and rooting
+
+Trees are read with `readnw`, re-exported from NewickTree.jl. `taxonindex` gives a tree's
+canonical taxon ordering — labels sorted, so positions depend on the taxon set rather than
+on the order leaves happened to appear — and every array a metric builds is indexed by
+those positions:
+
+```julia
+tree = readnw("(((Human:0.1,Chimp:0.1):0.2,Gorilla:0.3):0.1,Orang:0.5,Gibbon:0.6);")
+index = taxonindex(tree)
+taxa(index)      # ["Chimp", "Gibbon", "Gorilla", "Human", "Orang"]
+index["Human"]   # 4
+```
+
+The two-argument form additionally requires that both trees span the same taxon set and
+names the labels that differ otherwise. Repeated labels within a tree are rejected: they
+would make the correspondence between two trees ambiguous.
+
+Newick carries no explicit marker for rooting, so `PhyloDistances.isrooted` reads it from
+the root's child count — two means rooted, three or more means the root is an arbitrary
+starting point. When that does not match what a metric is defined on:
+
+- **a rooted tree given to an unrooted metric warns and proceeds.** The root's two child
+  branches induce the same bipartition, so discarding the root position leaves a
+  well-defined unrooted tree, and the warning says so.
+- **an unrooted tree given to a rooted metric throws.** There is no canonical way to root
+  it — midpoint and outgroup rooting give different answers — so the choice belongs to the
+  caller. Root the tree explicitly, for instance with `NewickTree.set_outgroup`.
+
+Node types other than `NewickTree.Node` are accepted once
+`PhyloDistances.taxonlabel(leaf)` is defined for them; everything else goes through the
+AbstractTrees.jl interface.
+
 ### Conventions
 
 Several tree metrics have more than one formulation in the literature, differing in
