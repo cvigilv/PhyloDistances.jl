@@ -6,86 +6,88 @@
 
 ## What was just completed
 
-CHUNK-003: tree-ingest-and-taxa
+CHUNK-004: split-extraction
 
-`src/taxa.jl` adds the canonical taxon indexing every metric will build its arrays on, and
-settles the rooting policy. `taxonindex(tree)` returns a `TaxonIndex` whose labels are
-sorted, so positions depend on the taxon set rather than on the order leaves appeared;
-`taxonindex(t1, t2)` additionally requires that both trees span the same taxa and names the
-labels that differ. `isrooted` reads rooting from the root's child count, and
-`_checkrooting` — called from `_apply`, so it runs for every metric automatically —
-reconciles the inputs against `requiresrooted`.
+`src/splits.jl` extracts the bipartitions a tree induces on its taxa. A split is a
+`BitVector` over `TaxonIndex` positions, oriented so the first taxon is never a member;
+`Splits` pairs the masks with the branch length supporting each. A single bottom-up walk
+records the branch above every node except the root, canonicalizes each mask, and
+accumulates lengths.
+
+`length(symdiff(s1, s2))` is the Robinson-Foulds distance, so the next metric chunk is
+mostly assembly.
 
 ## Key decisions made
 
-- **Rooting rules, settled** (this was the standing open question). Newick has no explicit
-  rooting marker, so it is read from the root's child count: 2 = rooted, ≥3 = unrooted.
-  - A **rooted tree given to an unrooted metric warns and proceeds**, ignoring the root.
-    This needs no tree surgery because the root's two child branches induce the *same*
-    bipartition, so the unrooted reading is well defined. **CHUNK-004's split
-    canonicalization is what must honor this** — if the root split does not drop out, the
-    warning is a lie.
-  - An **unrooted tree given to a rooted metric throws**. Midpoint and outgroup rooting
-    give different answers, so the choice belongs to the caller.
-  - A root with fewer than two children throws: the question has no answer.
-- **Same-taxa validation is not in `_apply`.** It happens where a metric calls
-  `taxonindex(t1, t2)`, which every metric needs anyway. Putting it in `_apply` would cost
-  a full extra traversal on every comparison. Only the rooting check — which just counts
-  root children — is automatic.
-- **Duplicate leaf labels throw.** NewickTree parses `((A,A),C)` silently into leaves
-  `["A","A","C"]`, which would corrupt taxon indexing invisibly.
-- **`taxonlabel(leaf)` is the extension point** for node types other than
-  `NewickTree.Node`; leaf labels are not part of the AbstractTrees interface. Its fallback
-  throws with instructions rather than raising a bare `MethodError`.
-- **Import hygiene.** AbstractTrees and NewickTree both export `children`, `getroot`,
-  `isroot` and `print_tree` — those names were already ambiguous inside the module. It now
-  imports the *modules* (`using AbstractTrees: AbstractTrees`) rather than their names.
-- **`NewickTree.degree` is not child count** (`degree(leaf) == 2`); rooting uses
-  `length(AbstractTrees.children(node))`.
+- **Canonical orientation makes the representation inherently unrooted**, which is what
+  discharges the promise made by the rooting warning. A rooted tree's two root branches
+  describe the *same* bipartition, so they collapse to one split whose length is their
+  **sum** — reconstructing the branch an unrooted reading sees. Summing is the general rule
+  for any two branches inducing the same bipartition, which also covers degree-2 nodes.
+- **A rooted binary tree therefore gives n−3 splits, not n−2.** Rooted metrics
+  (Kendall-Colijn) must take their information from path lengths rather than splits.
+- **Trivial splits are excluded by default.** They correspond to pendant branches, which
+  every tree on the same taxa has, so they distinguish nothing. `trivial = true` keeps them,
+  which branch-score-style metrics need since those sum over all branches.
+- **Masks are sorted**, so iteration order is a function of the split set alone rather than
+  of traversal order. Two trees sharing an index iterate their common splits identically.
+  This was found empirically — before sorting, the same split set came out in different
+  orders from differently-shaped trees.
+- **Set operations throw when the two `Splits` came from different taxon orderings.** Masks
+  from different orderings index different taxa, so comparing them would silently answer a
+  question nobody asked.
+- **`branchlength(node)` is the extension point** for non-NewickTree node types, alongside
+  `taxonlabel`. Lengths are `NaN` where the tree records none, which propagates visibly.
 
 ## State of the codebase
 
-- Files created: `src/taxa.jl`, `test/test_taxa.jl`
-- Files modified: `src/PhyloDistances.jl`, `src/interface.jl`, `test/runtests.jl`,
-  `test/test_interface.jl`, `README.md`
+- Files created: `src/splits.jl`, `test/test_splits.jl`
+- Files modified: `src/PhyloDistances.jl`, `test/runtests.jl`
 - Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — 100 tests
+- Test suite passes: yes — 171 tests
 - Entry points: no analysis entry point yet.
   `julia --project=. -e 'using Pkg; Pkg.test()'` runs the suite.
 - Known issues: none
-- Verified during development on realistic primate trees (rooting detection, shared taxon
-  index, mismatched-taxa error, duplicate-label error); not committed as tests, since the
-  synthetic fixtures cover the same paths portably.
+- Verified during development on realistic primate trees: hand-checked that canonical
+  orientation flips the expected splits, that the rooted and unrooted forms of one tree give
+  the same split set, and that the n−3 invariant holds up to 200 taxa. Not committed as
+  tests; the synthetic fixtures cover the same paths portably.
 
 ## Next chunk
 
-CHUNK-004: split-extraction
+CHUNK-005: random-tree-generation
 
-Extract the bipartition (split) set of a tree as bitsets over the `TaxonIndex` from
-CHUNK-003, with each split's supporting branch length attached. Needs: a `Splits` container
-type with set operations, canonical orientation (e.g. the side not containing taxon 1), and
-a documented policy on trivial splits (pendant edges) and on the root split.
+Seeded generators for test fixtures: uniform random topology on n tips, random branch
+lengths, and controlled perturbation (apply k random NNI moves, returning the perturbed
+tree). The perturbation generator is the main tool for validating metrics with no closed
+form — distance should rise with k in expectation.
 
-Verify with hand-computed split sets written as literals, plus invariants: a binary tree on
-n tips has n−3 non-trivial splits unrooted / n−2 rooted; splits are invariant under leaf
-relabeling composed with reindexing; canonical orientation is idempotent.
+This belongs in `src/` rather than `test/`, documented and tested, so the benchmark and
+comparison scripts can use it too. Verify that generated trees are valid (correct tip
+count, every internal node has ≥2 children, no repeated labels) and reproducible under a
+fixed seed.
+
+CHUNK-006 (robinson-foulds) is the chunk after, and is largely assembly over `symdiff`.
 
 ## Watch out for
 
-- **CHUNK-004 owes a debt to CHUNK-003.** The rooting warning promises that a rooted tree's
-  root position is *ignored* under an unrooted metric. Canonical orientation has to make
-  that true — the root's two child branches induce the same bipartition, which must
-  collapse to one split rather than appearing twice.
-- **`NewickTree.degree` is graph degree, not child count.** `degree(leaf) == 2`. Use
+- **Length arithmetic across rootings is inexact.** Recovering an unrooted branch by
+  addition is a floating-point sum: `0.2 + 0.4 == 0.6000000000000001`. A rooted tree and the
+  same tree written unrooted give lengths differing in the last ulp, so weighted RF, branch
+  score and any other length-comparing metric must assert with `≈`, never `==`.
+- **Do not rely on `Splits` iteration order matching tree structure** — masks are sorted.
+  Use the set operations or mask lookup.
+- **`splits` excludes trivial splits by default.** A metric that sums over *all* branches
+  (branch score) must pass `trivial = true`, or it will silently ignore every pendant
+  branch.
+- **`NewickTree.degree` is graph degree, not child count** (`degree(leaf) == 2`). Use
   `length(AbstractTrees.children(node))`.
-- **Do not reintroduce a bare `using AbstractTrees` or `using NewickTree`** — four exported
-  names collide between them.
+- **Do not reintroduce a bare `using AbstractTrees` or `using NewickTree`** — they both
+  export `children`, `getroot`, `isroot` and `print_tree`.
 - **The critical path is CHUNK-001 → CHUNK-008**, ending in validated Robinson-Foulds and
-  quartet distance, which are needed for immediate use. Nothing past CHUNK-008 is urgent.
-- **Dummy metrics in `test/test_interface.jl` now use real trees** built by the local
-  `star(n)` and `rooted(n)` helpers, reducing a tree to its leaf count. `star` is unrooted
-  (root degree n), `rooted` has root degree 2. Metrics declaring `requiresrooted` must be
-  handed `rooted(n)` or the rooting check throws.
+  quartet distance, needed for immediate use. Nothing past CHUNK-008 is urgent.
+- **Dummy metrics in `test/test_interface.jl` use real trees** built by local `star(n)` and
+  `rooted(n)` helpers. Metrics declaring `requiresrooted` must be handed `rooted(n)`.
 - **`test/fixtures/` and `scripts/` hold `.gitkeep` placeholders.** Delete each when the
   directory gains real content.
 - **Julia 1.12 is the declared floor and there is no LTS back-support.**

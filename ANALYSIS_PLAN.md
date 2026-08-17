@@ -160,6 +160,15 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `degree(leaf) == 2`. Use `length(AbstractTrees.children(node))`. Separately,
   AbstractTrees and NewickTree both export `children`, `getroot`, `isroot` and
   `print_tree`, so the module imports the modules rather than their names.
+- 2026-08-17 (CHUNK-004): Splits are **inherently unrooted**: canonical orientation (first
+  taxon never a member) collapses a rooted tree's two root branches into one split whose
+  length is their **sum**. So a rooted binary tree on n taxa yields **n−3** splits, the same
+  as unrooted — not n−2. Any rooted metric must use path lengths rather than splits.
+- 2026-08-17 (CHUNK-004): Recovering an unrooted branch length by addition is a
+  floating-point sum, so a rooted tree and the same tree written unrooted give lengths
+  differing in the last ulp (`0.2 + 0.4 == 0.6000000000000001`). **Weighted RF, branch
+  score and every other length-comparing metric must use `≈`, not `==`, when asserting that
+  two rootings of one tree agree.**
 
 ## Chunks
 
@@ -298,16 +307,43 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `Splits` container type with set operations, and a documented policy on trivial splits
   (pendant edges) and on the root split for rooted trees. This is the shared substrate for
   the entire RF and generalized-RF family.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-003
-- **Outputs**: `Splits` type; `splits(tree)`.
+- **Outputs**: `Splits` type; `splits(tree)`, `splits(tree, index)`.
 - **Verification strategy**: Hand-computed split sets for small trees written as literals
-  in the test; invariant assertions — a binary tree on n tips has n−3 non-trivial splits
-  (unrooted) / n−2 (rooted); splits are invariant to leaf-label permutation composed with
-  reindexing; canonical orientation is idempotent.
-- **Notes**: Build the `plot_splits` primitive from Target Outputs here if split debugging
-  demands it — the incidence view is the fastest way to spot orientation and
-  trivial-split bugs. CHUNK-025 consolidates it with the other plots.
+  in the test; invariant assertions — a binary tree on n tips has n−3 non-trivial splits;
+  splits depend on the taxon set rather than leaf order; canonical orientation is
+  idempotent.
+- **Notes**: Lives in `src/splits.jl`. A split is a `BitVector` over `TaxonIndex`
+  positions, **oriented so the first taxon is never a member**. `Splits` holds the masks
+  plus a `Dict{BitVector,Float64}` of supporting branch lengths; index with a mask to get
+  its length, iterate to get masks, `pairs` for both.
+
+  **Deviation from the plan's expectation:** rooted trees give **n−3** splits, not n−2.
+  Canonical orientation makes the representation inherently unrooted — the root's two
+  branches describe the same bipartition and collapse to one split whose length is their
+  **sum**, reconstructing the unrooted branch. This is what makes CHUNK-003's "root
+  position is ignored" warning true rather than merely asserted. Rooted metrics
+  (Kendall-Colijn) must take their information from path lengths, not splits.
+
+  Summing is the general rule for any two branches inducing the same bipartition, which
+  also covers degree-2 "knuckle" nodes.
+
+  **Trivial splits (pendant branches) are excluded by default**; `trivial = true` keeps
+  them, which the branch-length metrics (CHUNK-009 branch score) need since they sum over
+  all branches including terminal ones.
+
+  Masks are **sorted**, so iteration order depends only on the split set — two trees
+  sharing an index iterate common splits identically. Do not rely on traversal order.
+
+  Set operations (`intersect`, `union`, `setdiff`, `symdiff`) return `Vector{BitVector}`
+  and **throw if the two `Splits` were built against different taxon orderings**, since
+  masks from different orderings index different taxa. `length(symdiff(s1, s2))` is the
+  Robinson-Foulds distance.
+
+  `branchlength(node)` is the extension point for non-NewickTree node types, alongside
+  `taxonlabel`. `incidencematrix(s)` returns the taxa × splits matrix feeding
+  `plot_splits`; CHUNK-025 adds the rendering.
 
 ### CHUNK-005: random-tree-generation
 - **Description**: Seeded generators for test fixtures: uniform random topology on n tips,
@@ -617,9 +653,15 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-001 (scaffold-package) → next: CHUNK-002
 - 2026-08-17 CHUNK-002 (design-distance-api) → next: CHUNK-003
 - 2026-08-17 CHUNK-003 (tree-ingest-and-taxa) → next: CHUNK-004
+- 2026-08-17 CHUNK-004 (split-extraction) → next: CHUNK-005
 
 ## Open Questions
 
+- **Split representation at scale.** Splits are `BitVector`s used as `Dict` keys, so
+  hashing and comparison are O(n) per split. For n ≤ 64 a `UInt64` mask would be
+  dramatically faster, and the benchmark targets go to 1000 tips. Deferred as premature
+  until CHUNK-026 shows whether it matters; the `Splits` API does not expose the
+  representation, so this can change without touching callers.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
