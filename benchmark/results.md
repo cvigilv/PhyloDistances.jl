@@ -21,10 +21,10 @@ its garbage collector saw, which includes everything already resident.
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs |
 |-----:|---------------:|---------:|------:|------------:|-------------:|
-| 10 | 15.1 µs | 40.1 µs | 0.4× | 0.02 MB | 415 |
-| 50 | 121.4 µs | 48.2 µs | 2.5× | 0.10 MB | 1987 |
-| 200 | 1.29 ms | 119.9 µs | 10.8× | 0.42 MB | 7726 |
-| 1000 | 26.68 ms | 2.69 ms | 9.9× | 2.68 MB | 39155 |
+| 10 | 1.5 µs | 37.2 µs | 0.0× | 0.01 MB | 101 |
+| 50 | 5.5 µs | 46.0 µs | 0.1× | 0.02 MB | 107 |
+| 200 | 26.2 µs | 115.9 µs | 0.2× | 0.07 MB | 123 |
+| 1000 | 120.0 µs | 2.41 ms | 0.0× | 0.34 MB | 171 |
 
 ## All pairs within a collection
 
@@ -32,6 +32,6 @@ its garbage collector saw, which includes everything already resident.
 
 | | time | per pair |
 |---|-----:|---------:|
-| PhyloDistances | 139.94 ms | 179.4 µs |
-| TreeDist | 1.93 ms | 2.5 µs |
-| ratio | 72.5× | |
+| PhyloDistances | 6.27 ms | 8.0 µs |
+| TreeDist | 1.73 ms | 2.2 µs |
+| ratio | 3.6× | |

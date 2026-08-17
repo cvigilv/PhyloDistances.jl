@@ -36,8 +36,9 @@ struct TaxonIndex{L}
     TaxonIndex{L}(labels, positions) where {L} = new{L}(labels, positions)
 end
 
-function TaxonIndex(labels::AbstractVector)
-    sorted = sort(collect(labels))
+TaxonIndex(labels::AbstractVector) = _fromsorted(sort(collect(labels)))
+
+function _fromsorted(sorted::Vector)
     return TaxonIndex{eltype(sorted)}(
         sorted, Dict(label => i for (i, label) in enumerate(sorted))
     )
@@ -74,7 +75,13 @@ whichever leaf happened to be visited last.
 """
 function taxonlabels(tree)
     labels = [taxonlabel(leaf) for leaf in AbstractTrees.Leaves(tree)]
+    _rejectrepeats(labels)
+    return labels
+end
 
+# A repeated label would make the correspondence between two trees ambiguous, and every
+# array indexed by taxon would silently take whichever leaf was visited last.
+function _rejectrepeats(labels)
     counts = Dict{eltype(labels),Int}()
     for label in labels
         counts[label] = get(counts, label, 0) + 1
@@ -85,7 +92,7 @@ function taxonlabels(tree)
         "tree has repeated taxon labels: $(join(repr.(repeated), ", ")); " *
         "taxon labels must be unique within a tree"
     ))
-    return labels
+    return nothing
 end
 
 """
@@ -101,19 +108,29 @@ it is what validates that a comparison is meaningful.
 taxonindex(tree) = TaxonIndex(taxonlabels(tree))
 
 function taxonindex(t1, t2)
-    l1, l2 = taxonlabels(t1), taxonlabels(t2)
-    s1, s2 = Set(l1), Set(l2)
-    if s1 != s2
-        only1 = sort!(collect(setdiff(s1, s2)))
-        only2 = sort!(collect(setdiff(s2, s1)))
-        throw(ArgumentError(
-            "trees span different taxa: " *
-            "only in the first tree: $(isempty(only1) ? "none" : join(repr.(only1), ", "))" *
-            "; only in the second tree: " *
-            "$(isempty(only2) ? "none" : join(repr.(only2), ", "))"
-        ))
+    return _sharedindex(taxonlabels(t1), taxonlabels(t2))
+end
+
+# Both trees must span the same taxa for any comparison between them to mean anything.
+# Comparing the labels in sorted order settles that without hashing, and the sorted vector
+# is the ordering the index needs anyway.
+function _sharedindex(l1, l2)
+    sorted = sort(l1)
+    if length(l1) != length(l2) || sorted != sort(l2)
+        _reportdifferingtaxa(l1, l2)
     end
-    return TaxonIndex(l1)
+    return _fromsorted(sorted)
+end
+
+@noinline function _reportdifferingtaxa(l1, l2)
+    only1 = sort!(collect(setdiff(Set(l1), Set(l2))))
+    only2 = sort!(collect(setdiff(Set(l2), Set(l1))))
+    throw(ArgumentError(
+        "trees span different taxa: " *
+        "only in the first tree: $(isempty(only1) ? "none" : join(repr.(only1), ", "))" *
+        "; only in the second tree: " *
+        "$(isempty(only2) ? "none" : join(repr.(only2), ", "))"
+    ))
 end
 
 """

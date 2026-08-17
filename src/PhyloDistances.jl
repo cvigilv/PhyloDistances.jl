@@ -59,6 +59,7 @@ public branchlength, convention, incidencematrix, isnormalized, isrooted, issimi
 include("taxa.jl")
 include("random.jl")
 include("splits.jl")
+include("clustertable.jl")
 include("interface.jl")
 include("robinsonfoulds.jl")
 

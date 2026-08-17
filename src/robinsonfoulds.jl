@@ -29,11 +29,25 @@ RobinsonFoulds(; convention = TreeDistConvention(), normalize = false) =
     RobinsonFoulds(Convention(convention), normalize)
 
 function _compare(::RobinsonFoulds, ::Convention, t1, t2)
-    index = taxonindex(t1, t2)
-    return length(symdiff(splits(t1, index), splits(t2, index)))
+    # One walk per tree yields structure and labels together, and the two are numbered
+    # against each other rather than against a sorted ordering neither result depends on.
+    f1, f2 = flatten(t1), flatten(t2)
+    pos1, pos2 = _matchedpositions(f1, f2)
+    n = length(f1.labels)
+
+    table = clustertable(f1, pos1, n)
+    shared, n2 = sharedclusters(table, f2, pos2, n)
+
+    # Each tree's unmatched clusters are what separates them.
+    return nclusters(table) + n2 - 2 * shared
 end
 
-normalizerinfo(::RobinsonFoulds, ::Convention, tree) = length(splits(tree))
+function normalizerinfo(::RobinsonFoulds, ::Convention, tree)
+    flat = flatten(tree)
+    _rejectrepeats(flat.labels)
+    n = length(flat.labels)
+    return nclusters(clustertable(flat, Int32.(1:n), n))
+end
 
 Distances.result_type(m::RobinsonFoulds, ::Type, ::Type) =
     isnormalized(m) ? Float64 : Int

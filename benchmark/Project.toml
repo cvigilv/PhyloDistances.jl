@@ -1,4 +1,5 @@
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+FlameGraphs = "08572546-2f56-4bcf-ba4e-bab62c3a3f89"
 PhyloDistances = "e638b194-4f2e-495a-b9ca-cc8e07bda67d"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"

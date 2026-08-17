@@ -252,6 +252,27 @@ Produce these live in the MCP Julia session and let them go when it exits.
   distinct fixes: hoist per-tree preprocessing out of the all-pairs loop (CHUNK-024), and
   pack splits into a `UInt64` for n ≤ 64 to drop the O(n) hashing. Neither affects results.
   Runner and results live in `benchmark/`.
+- 2026-08-17 (CHUNK-006, performance): Robinson-Foulds uses **Day's (1985) cluster-table
+  algorithm**, as TreeDist does, in `src/clustertable.jl`. Rooting at one taxon and numbering
+  leaves depth-first makes each cluster a contiguous interval, so membership is a
+  constant-time lookup and a comparison costs O(n) rather than O(n²). Now **4–25× faster
+  than TreeDist** on a single pair, from 20× slower; n=1000 went 26.7 ms to 120 µs.
+- 2026-08-17 (CHUNK-006, performance): Two lessons that generalize to every later metric.
+  (a) **Iterating `AbstractTrees.Leaves` allocates a cursor per step** — 39,700 per
+  comparison at 200 taxa. One typed iterative walk collecting structure and labels together
+  cut `flatten` from 45.7 µs to 3.5 µs. (b) **Do not build a canonical sorted ordering when
+  the result does not depend on it**: sorting labels was 64% of the remaining time at 1000
+  taxa. Comparison-only numbering — the second tree numbered against the first — is enough,
+  and `TaxonIndex` is only needed where split masks must be reproducible.
+- 2026-08-17 (CHUNK-006, performance): **`@inbounds` was assessed and rejected on evidence.**
+  Profiling put the cost in string hashing (16%) and allocation (21%), not array indexing,
+  and 1 frame of 1,399 showed runtime dispatch. Do not add it without a profile that blames
+  bounds checking. `@threads` is worthwhile, but at the all-pairs level (CHUNK-024), not
+  inside a single comparison.
+- 2026-08-17 (CHUNK-006, correctness trap): Rooting a tree at a taxon turns its original
+  root into a **single-branch pass-through node**, whose cluster duplicates its only child's.
+  Counting both inflated every distance involving a rooted input. Any traversal that
+  enumerates clusters must skip nodes with fewer than two branches below them.
 
 ## Chunks
 
@@ -728,10 +749,11 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Verification strategy**: The matrix agrees entrywise with repeated pairwise calls; the
   diagonal is zero (or maximal, for similarities); preprocessing allocations scale as O(n)
   in the number of trees rather than O(n²).
-- **Notes**: **Measured motivation**: all-pairs Robinson-Foulds over 40 trees of 60 taxa
-  runs 72.5× slower than TreeDist, at 179 µs per pair against 2.5 µs — far worse than the
-  ~10× single-pair ratio, because every pair re-extracts both trees' split sets. This is the
-  largest available win and changes no results. See `benchmark/`.
+- **Notes**: **Measured motivation**: all-pairs Robinson-Foulds runs 3.6× slower than
+  TreeDist at 8.0 µs per pair against 2.2 µs, while a *single* pair is 4–25× faster. The gap
+  is entirely that each pair re-reads both trees. Hoisting the per-tree work out of the loop
+  is the fix, and independent pairs are also embarrassingly parallel, so `@threads` belongs
+  here rather than inside any single comparison. Neither changes results. See `benchmark/`.
 
 ### CHUNK-025: visualization-extension
 - **Description**: Implement the four composable primitives from Target Outputs
@@ -847,12 +869,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
 
 ## Open Questions
 
-- **Split representation at scale — now measured.** Splits are `BitVector`s used as hash
-  keys, so each hash and comparison is O(n) and the set operations come to O(n²). At 200
-  taxa a single Robinson-Foulds call spends ~180 µs on the taxon index, ~500 µs extracting
-  both split sets, and **~600 µs in `symdiff`** — nearly half the total. Packing a split
-  into a `UInt64` for n ≤ 64 would remove that factor. The `Splits` API hides the
-  representation, so this changes nothing for callers. See `benchmark/`.
+- **Split representation at scale.** Splits are `BitVector`s used as hash keys, so each hash
+  and comparison is O(n) and set operations come to O(n²). Robinson-Foulds no longer goes
+  through them — it uses the cluster-table encoding — but every metric built on
+  `Splits` still will. Packing a split into a `UInt64` for n ≤ 64 would remove the factor;
+  the `Splits` API hides the representation, so this changes nothing for callers. Revisit
+  when the first split-matching metric is benchmarked.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.

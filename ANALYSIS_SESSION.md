@@ -9,13 +9,18 @@
 CHUNK-006: robinson-foulds
 
 `src/robinsonfoulds.jl` adds `RobinsonFoulds` and `WeightedRobinsonFoulds`, the first real
-metrics. The topological distance is the size of the symmetric difference of the two trees'
-split sets; the weighted one sums, over every split either tree contains, the difference
-between its lengths, treating an absent split as length zero.
+metrics. The weighted one sums, over every split either tree contains, the difference between
+its lengths, treating an absent split as length zero.
 
-**`RobinsonFoulds` is validated against TreeDist 2.14.1**: nine hand-picked pairs embedded
-in the tests with provenance, plus a randomized cross-check of 300 random pairs (4–25 taxa,
-RF 0–40) with **zero mismatches** on raw and normalized values alike.
+The topological distance uses **Day's (1985) cluster-table algorithm** in
+`src/clustertable.jl`, the same one TreeDist uses, rather than the symmetric difference of
+split sets it started as. It is now **4–25× faster than TreeDist** on a single pair; n=1000
+went from 26.7 ms to 120 µs.
+
+**`RobinsonFoulds` is validated against TreeDist 2.14.1**: nine hand-picked pairs embedded in
+the tests with provenance, plus randomized cross-checks over 1,500 pairs — half with rooted
+inputs — with **zero mismatches** on raw and normalized values, and separately against the
+split-set formulation it replaced.
 
 ## Key decisions made
 
@@ -38,10 +43,12 @@ RF 0–40) with **zero mismatches** on raw and normalized values alike.
 
 ## State of the codebase
 
-- Files created: `src/robinsonfoulds.jl`, `test/test_robinsonfoulds.jl`
-- Files modified: `src/PhyloDistances.jl`, `test/runtests.jl`, `test/Project.toml`
+- Files created: `src/robinsonfoulds.jl`, `src/clustertable.jl`,
+  `test/test_robinsonfoulds.jl`, `test/test_clustertable.jl`, `benchmark/`
+- Files modified: `src/PhyloDistances.jl`, `src/taxa.jl`, `test/runtests.jl`,
+  `test/Project.toml`
 - Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — 463 tests
+- Test suite passes: yes — 900 tests
 - Entry points: `RobinsonFoulds()(t1, t2)`, `pairwise(RobinsonFoulds(), trees)`
 - Known issues: none
 
@@ -87,8 +94,34 @@ before relying on one.
 
 After that, CHUNK-008 (validation of RF and quartet) closes the critical path.
 
+## Performance discipline established
+
+Metrics use the most efficient algorithm available, taking TreeDist's choice as the starting
+point. Robinson-Foulds is Day's (1985) cluster-table algorithm, in `src/clustertable.jl`, and
+is now **4–25× faster than TreeDist** on a single pair.
+
+Three findings that generalize to every later metric:
+
+- **Iterating `AbstractTrees.Leaves` allocates a cursor per step** — 39,700 per comparison at
+  200 taxa. Use one typed, iterative walk that collects structure and labels together.
+- **Do not build a canonical sorted ordering the result does not depend on.** Sorting labels
+  was 64% of the remaining time at 1000 taxa. `TaxonIndex` is needed only where split masks
+  must be reproducible; comparison-only numbering suffices otherwise.
+- **`@inbounds` was assessed and rejected on evidence.** Profiling blamed string hashing and
+  allocation, not array indexing. Do not add it without a profile that blames bounds
+  checking. `@threads` is worthwhile at the all-pairs level, not inside one comparison.
+
+Profile with the `profile-performance` skill. Note the Julia MCP server was unavailable this
+session, so measurements ran as one-shot scripts through Bash rather than in a persistent
+Revise session.
+
 ## Watch out for
 
+- **Rooting a tree at a taxon turns its original root into a single-branch pass-through
+  node**, whose cluster duplicates its only child's. Counting both inflated every distance
+  involving a rooted input — a real bug the hand-picked reference pairs caught but 2,000
+  random *unrooted* pairs did not. Any traversal enumerating clusters must skip nodes with
+  fewer than two branches below them, and randomized checks must include rooted trees.
 - **Check whether TreeDist implements a metric before assuming a reference exists.** It has
   no weighted RF and, as far as the export list shows, no quartet distance either.
 - **Derive normalizers from TreeDist, never from the literature.** It normalizes RF by
