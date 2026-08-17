@@ -37,11 +37,13 @@ module PhyloDistances
 using AbstractTrees: AbstractTrees
 using Distances: Distances, colwise, colwise!, evaluate, pairwise, pairwise!, result_type
 using NewickTree: NewickTree, readnw
+using Random: Random
 
 export TreeMetric, TreeSimilarity, TreeComparison
 export Convention, TreeDistConvention, PrimaryConvention
 export TaxonIndex, taxa, taxonindex
 export Splits, splits
+export randomtree, perturb
 
 # Distances.jl is the interface these metrics implement, and NewickTree.jl reads the trees
 # they consume; re-exporting means a user loading those packages too sees one set of
@@ -50,10 +52,11 @@ export colwise, colwise!, evaluate, pairwise, pairwise!, result_type
 export readnw
 
 public branchlength, convention, incidencematrix, isnormalized, isrooted, issimilarity,
-    istrivial, normalization, normalizer, normalizerinfo, requiresrooted, taxonlabel,
-    taxonlabels
+    istrivial, nni!, normalization, normalizer, normalizerinfo, requiresrooted,
+    taxonlabel, taxonlabels
 
 include("taxa.jl")
+include("random.jl")
 include("splits.jl")
 include("interface.jl")
 
