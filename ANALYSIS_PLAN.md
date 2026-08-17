@@ -150,6 +150,16 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `SemiMetric` **assumes** the zero diagonal instead of computing it — verified, a
   similarity declared `SemiMetric` reports zero self-similarity. Similarities therefore
   subtype `TreeSimilarity`, outside the Distances hierarchy.
+- 2026-08-17 (CHUNK-003): Rooting is read from the root's child count (2 = rooted, >=3 =
+  unrooted); Newick has no explicit marker. A **rooted tree given to an unrooted metric
+  warns and proceeds with the root ignored** — valid because the root's two child branches
+  induce the same bipartition — while an **unrooted tree given to a rooted metric throws**,
+  since no canonical rooting exists. Split extraction must canonicalize so that the
+  ignored root really does drop out.
+- 2026-08-17 (CHUNK-003): `NewickTree.degree` is graph degree, not child count:
+  `degree(leaf) == 2`. Use `length(AbstractTrees.children(node))`. Separately,
+  AbstractTrees and NewickTree both export `children`, `getroot`, `isroot` and
+  `print_tree`, so the module imports the modules rather than their names.
 
 ## Chunks
 
@@ -242,14 +252,44 @@ Produce these live in the MCP Julia session and let them go when it exits.
   message naming tree, metric, and conversion, and applies that conversion — or throws
   when no defensible conversion exists. All traversal goes through AbstractTrees.jl so the
   code works for any conforming node type, not only `NewickTree.Node`.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-002
 - **Verification strategy**: Synthetic Newick strings constructed in the test itself (no
   external files); assert the taxon vector, the index map, that mismatched taxon sets
   throw with a message naming the offending labels (`@test_throws "..."`), and that the
-  rooting mismatch path emits the expected warning (`@test_logs`) and returns the
-  converted tree.
-- **Notes**:
+  rooting mismatch path emits the expected warning (`@test_logs`).
+- **Notes**: Lives in `src/taxa.jl`. Public surface: `TaxonIndex`, `taxonindex(tree)` and
+  `taxonindex(t1, t2)`, `taxa(index)`, plus `public` `isrooted`, `taxonlabel`,
+  `taxonlabels`. `readnw` is re-exported from NewickTree.
+
+  **Rooting rules, settled.** Rooting is read from the root's child count: 2 = rooted,
+  >=3 = unrooted (Newick has no explicit marker). A root with <2 children throws, since
+  the question has no answer. Reconciliation against `requiresrooted`:
+  - rooted tree + unrooted metric -> **warn and proceed**, root position ignored. Legitimate
+    without tree surgery because the root's two child branches induce the *same*
+    bipartition, so the unrooted reading is well defined. CHUNK-004's split
+    canonicalization is what must honor this.
+  - unrooted tree + rooted metric -> **throw**. Midpoint and outgroup rooting give different
+    answers, so the choice is the caller's.
+
+  `_checkrooting` is called from `_apply`, so it runs for every metric automatically.
+  **Same-taxa validation is not in `_apply`** — it happens where a metric calls
+  `taxonindex(t1, t2)`, which every metric needs anyway; putting it in `_apply` would
+  duplicate a full traversal per comparison.
+
+  **Duplicate leaf labels throw.** NewickTree parses `((A,A),C)` silently into leaves
+  `["A","A","C"]`, which would corrupt taxon indexing invisibly.
+
+  `taxonlabel(leaf)` is the extension point for non-NewickTree node types; its fallback
+  throws with instructions rather than a `MethodError`. Everything else is AbstractTrees.
+
+  **Import hygiene**: AbstractTrees and NewickTree both export `children`, `getroot`,
+  `isroot` and `print_tree`. The module now imports the *modules* (`using AbstractTrees:
+  AbstractTrees`) rather than their names, so uses stay unambiguous. Do not reintroduce a
+  bare `using AbstractTrees`.
+
+  `NewickTree.degree` is **not** child count — `degree(leaf) == 2`. Use
+  `length(AbstractTrees.children(node))`.
 
 ### CHUNK-004: split-extraction
 - **Description**: Extract the bipartition (split) set of a tree as bitsets over the
@@ -576,14 +616,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
 
 - 2026-08-17 CHUNK-001 (scaffold-package) → next: CHUNK-002
 - 2026-08-17 CHUNK-002 (design-distance-api) → next: CHUNK-003
+- 2026-08-17 CHUNK-003 (tree-ingest-and-taxa) → next: CHUNK-004
 
 ## Open Questions
 
-- **Rooting conversion rules.** The policy is settled (warn and convert), but the specific
-  conversion for each direction is not. Unrooted → rooted needs a documented rooting rule
-  (midpoint? outgroup-required?); rooted → unrooted needs a documented root-split policy.
-  Resolve in CHUNK-003 and record in Working knowledge — the choice is visible in every
-  warning message the package emits.
+- **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
+  such trees are currently rejected at the first metric call. Whether that is the right
+  behavior for every metric belongs to the edge-case audit in CHUNK-023.
 - **Quartet distance algorithm.** Whether CHUNK-018's subquadratic version is worth
   implementing. Deferred until the CHUNK-026 benchmark shows what CHUNK-007 actually costs
   at the tip counts in use.

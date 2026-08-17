@@ -6,96 +6,86 @@
 
 ## What was just completed
 
-CHUNK-002: design-distance-api
+CHUNK-003: tree-ingest-and-taxa
 
-`src/interface.jl` defines the surface every metric must fit, built on the **Distances.jl**
-interface rather than a private one: `TreeMetric <: Distances.SemiMetric`, applied by
-calling it, `m(t1, t2)`. `pairwise`, `pairwise!`, `colwise`, `colwise!`, `evaluate` and
-`result_type` all work unchanged and are re-exported. Alongside it are a `Convention`
-hierarchy selecting between published formulations, the `requiresrooted` trait, and
-`TreeSimilarity` for quantities that are largest on identical trees. No concrete metric
-exists yet — this chunk is the contract, verified with dummy metrics defined in the tests.
-
-**Adding a metric requires:** `PhyloDistances._compare(m, ::TreeDistConvention, t1, t2)`,
-`convention` and `normalize` fields (or overrides of `convention`/`isnormalized`), and
-`Distances.result_type` if the result is not `Float64`. Optional: a `PrimaryConvention`
-method, `normalizer`, `requiresrooted`.
+`src/taxa.jl` adds the canonical taxon indexing every metric will build its arrays on, and
+settles the rooting policy. `taxonindex(tree)` returns a `TaxonIndex` whose labels are
+sorted, so positions depend on the taxon set rather than on the order leaves appeared;
+`taxonindex(t1, t2)` additionally requires that both trees span the same taxa and names the
+labels that differ. `isrooted` reads rooting from the root's child count, and
+`_checkrooting` — called from `_apply`, so it runs for every metric automatically —
+reconciles the inputs against `requiresrooted`.
 
 ## Key decisions made
 
-- **Distances.jl is the interface, not a model to copy.** An earlier iteration reimplemented
-  `PreMetric`/`SemiMetric`/`pairwise` badly; that was replaced by the real dependency.
-  Metrics are applied by calling them and there are **no call keywords** — this is forced,
-  not stylistic, because `pairwise` applies a metric without keywords, so anything not on
-  the type is unreachable through it.
-- **Every variant selector is a field**: `convention`, `normalize`, and metric-specific
-  parameters such as JRF's `k` or Kendall-Colijn's λ. A constructed metric specifies the
-  computation completely.
-- **Similarities sit outside the Distances hierarchy**, subtyping `TreeSimilarity` with
-  their own `Distances.pairwise` methods. `PreMetric` requires `d(x,x) == 0`, and
-  `SemiMetric` is actively dangerous: `pairwise` *assumes* the zero diagonal rather than
-  computing it. Verified — a similarity declared `SemiMetric` yields
-  `[0 98 95; 98 0 97; 95 97 0]` where the truth is `[100 98 95; 98 100 97; 95 97 100]`.
-- **`Distances.result_type` must be defined by every concrete metric** whose result is not
-  `Float64`. Its default infers from `one(eltype(a))`, which assumes numeric observations
-  and throws outright for trees.
-- **Distances' functions are re-exported**, so `using PhyloDistances, Distances` is clean:
-  the names refer to identical bindings, which cannot clash. Verified.
-- **`Distances.pairwise` discards offset axes** — results are 1-based and index by position.
-  Accepted rather than diverging from upstream; a test pins the behavior so a change
-  upstream is noticed.
-- **`TreeMetric <: Distances.SemiMetric`, not `Metric`** — the safe common denominator,
-  since not every tree distance satisfies the triangle inequality. Promoting individual
-  metrics is an open question.
-- **No rooting stub.** Only the `requiresrooted` trait is defined here. CHUNK-003 adds the
-  actual precondition check; there is deliberately no placeholder to mistake for working
-  code.
+- **Rooting rules, settled** (this was the standing open question). Newick has no explicit
+  rooting marker, so it is read from the root's child count: 2 = rooted, ≥3 = unrooted.
+  - A **rooted tree given to an unrooted metric warns and proceeds**, ignoring the root.
+    This needs no tree surgery because the root's two child branches induce the *same*
+    bipartition, so the unrooted reading is well defined. **CHUNK-004's split
+    canonicalization is what must honor this** — if the root split does not drop out, the
+    warning is a lie.
+  - An **unrooted tree given to a rooted metric throws**. Midpoint and outgroup rooting
+    give different answers, so the choice belongs to the caller.
+  - A root with fewer than two children throws: the question has no answer.
+- **Same-taxa validation is not in `_apply`.** It happens where a metric calls
+  `taxonindex(t1, t2)`, which every metric needs anyway. Putting it in `_apply` would cost
+  a full extra traversal on every comparison. Only the rooting check — which just counts
+  root children — is automatic.
+- **Duplicate leaf labels throw.** NewickTree parses `((A,A),C)` silently into leaves
+  `["A","A","C"]`, which would corrupt taxon indexing invisibly.
+- **`taxonlabel(leaf)` is the extension point** for node types other than
+  `NewickTree.Node`; leaf labels are not part of the AbstractTrees interface. Its fallback
+  throws with instructions rather than raising a bare `MethodError`.
+- **Import hygiene.** AbstractTrees and NewickTree both export `children`, `getroot`,
+  `isroot` and `print_tree` — those names were already ambiguous inside the module. It now
+  imports the *modules* (`using AbstractTrees: AbstractTrees`) rather than their names.
+- **`NewickTree.degree` is not child count** (`degree(leaf) == 2`); rooting uses
+  `length(AbstractTrees.children(node))`.
 
 ## State of the codebase
 
-- Files created: `src/interface.jl`, `test/test_interface.jl`
-- Files modified: `src/PhyloDistances.jl`, `test/runtests.jl`, `test/Project.toml`,
-  `Project.toml`, `README.md`
-- Dependencies added: `Distances` (main), `Distances` + `OffsetArrays` (test-only)
+- Files created: `src/taxa.jl`, `test/test_taxa.jl`
+- Files modified: `src/PhyloDistances.jl`, `src/interface.jl`, `test/runtests.jl`,
+  `test/test_interface.jl`, `README.md`
 - Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — 59 tests
+- Test suite passes: yes — 100 tests
 - Entry points: no analysis entry point yet.
   `julia --project=. -e 'using Pkg; Pkg.test()'` runs the suite.
 - Known issues: none
+- Verified during development on realistic primate trees (rooting detection, shared taxon
+  index, mismatched-taxa error, duplicate-label error); not committed as tests, since the
+  synthetic fixtures cover the same paths portably.
 
 ## Next chunk
 
-CHUNK-003: tree-ingest-and-taxa
+CHUNK-004: split-extraction
 
-Newick ingest via NewickTree.jl plus canonical taxon indexing: the sorted leaf-label vector
-and a label→index map for one tree, and a check that two trees span the same taxon set that
-throws naming the differing labels. This chunk also implements the rooting policy: a
-predicate detecting whether a parsed tree is rooted, and a precondition helper that compares
-it against `requiresrooted(metric)`, **warns** naming tree, metric and conversion, and
-applies that conversion — or throws where no defensible conversion exists.
+Extract the bipartition (split) set of a tree as bitsets over the `TaxonIndex` from
+CHUNK-003, with each split's supporting branch length attached. Needs: a `Splits` container
+type with set operations, canonical orientation (e.g. the side not containing taxon 1), and
+a documented policy on trivial splits (pendant edges) and on the root split.
 
-Wire that helper into `_apply` in `src/interface.jl`, which is the single funnel every
-metric passes through.
-
-All traversal must go through AbstractTrees.jl, not `NewickTree.Node` internals, so the
-package accepts any conforming node type.
+Verify with hand-computed split sets written as literals, plus invariants: a binary tree on
+n tips has n−3 non-trivial splits unrooted / n−2 rooted; splits are invariant under leaf
+relabeling composed with reindexing; canonical orientation is idempotent.
 
 ## Watch out for
 
-- **The specific rooting conversion rules are still an open question**, and CHUNK-003 is
-  where they get settled. Unrooted → rooted needs a documented rooting rule (midpoint?
-  outgroup-required?); rooted → unrooted needs a root-split policy. Whatever is chosen is
-  visible in every warning the package emits, so record it in Working knowledge.
-- **The warn-and-convert policy is a deliberate exception to the project's fail-fast
-  stance.** It is only defensible because the warning states exactly what conversion was
-  applied. Where no such statement can be made, throw.
+- **CHUNK-004 owes a debt to CHUNK-003.** The rooting warning promises that a rooted tree's
+  root position is *ignored* under an unrooted metric. Canonical orientation has to make
+  that true — the root's two child branches induce the same bipartition, which must
+  collapse to one split rather than appearing twice.
+- **`NewickTree.degree` is graph degree, not child count.** `degree(leaf) == 2`. Use
+  `length(AbstractTrees.children(node))`.
+- **Do not reintroduce a bare `using AbstractTrees` or `using NewickTree`** — four exported
+  names collide between them.
 - **The critical path is CHUNK-001 → CHUNK-008**, ending in validated Robinson-Foulds and
   quartet distance, which are needed for immediate use. Nothing past CHUNK-008 is urgent.
-- **Dummy metrics in `test/test_interface.jl` use integers as stand-in trees**, which is
-  sound only because the interface performs no tree operations. Once CHUNK-003 wires the
-  rooting check into `_apply`, those dummies will need real trees or a rooting predicate
-  that tolerates them — expect to revisit that file.
+- **Dummy metrics in `test/test_interface.jl` now use real trees** built by the local
+  `star(n)` and `rooted(n)` helpers, reducing a tree to its leaf count. `star` is unrooted
+  (root degree n), `rooted` has root degree 2. Metrics declaring `requiresrooted` must be
+  handed `rooted(n)` or the rooting check throws.
 - **`test/fixtures/` and `scripts/` hold `.gitkeep` placeholders.** Delete each when the
   directory gains real content.
-- **Julia 1.12 is the declared floor and there is no LTS back-support.** Use 1.12 features
-  freely; do not add 1.10 compatibility shims.
+- **Julia 1.12 is the declared floor and there is no LTS back-support.**
