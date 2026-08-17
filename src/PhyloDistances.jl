@@ -45,6 +45,7 @@ export TaxonIndex, taxa, taxonindex
 export Splits, splits
 export randomtree, perturb
 export RobinsonFoulds, WeightedRobinsonFoulds
+export QuartetDistance
 
 # Distances.jl is the interface these metrics implement, and NewickTree.jl reads the trees
 # they consume; re-exporting means a user loading those packages too sees one set of
@@ -62,5 +63,6 @@ include("splits.jl")
 include("clustertable.jl")
 include("interface.jl")
 include("robinsonfoulds.jl")
+include("quartet.jl")
 
 end

@@ -7,4 +7,5 @@ using Test
     include("test_clustertable.jl")
     include("test_interface.jl")
     include("test_robinsonfoulds.jl")
+    include("test_quartet.jl")
 end
