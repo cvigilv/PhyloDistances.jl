@@ -6,50 +6,63 @@
 
 ## What was just completed
 
-CHUNK-006: robinson-foulds
+CHUNK-007: quartet-distance-exact, plus the reference validation and benchmarks for it.
 
-`src/robinsonfoulds.jl` adds `RobinsonFoulds` and `WeightedRobinsonFoulds`, the first real
-metrics. The weighted one sums, over every split either tree contains, the difference between
-its lengths, treating an absent split as length zero.
+`src/quartet.jl` adds `QuartetDistance`: the number of four-taxon subsets the two trees
+resolve differently, by direct enumeration of all `binomial(n, 4)` quartets. A quartet's
+topology is read off **leaf-to-leaf path lengths** rather than off the split set.
+`_topologicalpaths` tabulates the edge count between every pair of leaves in O(n²) — each
+pair filled once, at the node where its two subtrees join — and each quartet is then resolved
+in constant time by the four-point condition: of the three sums of opposite-pair distances,
+the smallest names the topology, and a three-way tie means the tree resolves it not at all.
 
-The topological distance uses **Day's (1985) cluster-table algorithm** in
-`src/clustertable.jl`, the same one TreeDist uses, rather than the symmetric difference of
-split sets it started as. It is now **4–25× faster than TreeDist** on a single pair; n=1000
-went from 26.7 ms to 120 µs.
-
-**`RobinsonFoulds` is validated against TreeDist 2.14.1**: nine hand-picked pairs embedded in
-the tests with provenance, plus randomized cross-checks over 1,500 pairs — half with rooted
-inputs — with **zero mismatches** on raw and normalized values, and separately against the
-split-set formulation it replaced.
+The R package **Quartet 1.3.0 was installed** to serve as its reference, and the validation
+and benchmark harnesses were extended to cover it.
 
 ## Key decisions made
 
-- **`normalize = true` divides by `n1 + n2`**, the two trees' combined split count, matching
-  the reference. Two star trees give `0/0`; TreeDist returns `NaN` and so do we, pinned by a
-  test.
-- **TreeDist implements no branch-length-weighted RF.** Its family is `RobinsonFoulds`,
-  `InfoRobinsonFoulds` (information-weighted, which belongs with the information metrics)
-  and `JaccardRobinsonFoulds`; branch-length weighting is phangorn's `wRF.dist`. So
-  `WeightedRobinsonFoulds` has no reference, both conventions coincide, and its tests are
-  hand-computed. **The same will apply to the Kuhner-Felsenstein branch score.**
-- **Weighted RF sums over the union, not the symmetric difference.** The chunk description
-  said otherwise, but summing only over the symmetric difference would ignore length
-  disagreement on shared splits, which is not the standard definition. Trivial splits are
-  included, so pendant branch lengths count.
-- **A tree without branch lengths is rejected** by the weighted metric rather than silently
-  compared as `NaN`.
-- **`result_type` is `Int` for unnormalized RF and `Float64` otherwise**, so an all-pairs
-  matrix of raw RF distances comes back as integers.
+- **A quartet resolved by only one tree counts as a difference** — confirmed to match the
+  reference exactly, not merely chosen. Quartet's `QuartetStatus` reports counts rather than
+  a distance, and ours is its `d + r1 + r2`.
+- **`normalize = true` divides by `binomial(n, 4)`**, which the crosscheck holds equal to
+  Quartet's own `Q`, so both sides agree on the divisor as well as the distance.
+- **Path lengths, not splits.** Resolving a quartet by scanning the split set would cost a
+  factor of n more and is no simpler.
+- **Deliberately the naive O(n⁴) algorithm**, as the chunk specifies. It is slower than the
+  reference and that is expected: tqDist counts the same quantity without enumerating it.
+- **R is reached two different ways, on measured grounds** — see below.
+
+## The harness split: RCall for validation, subprocess for benchmarks
+
+This was evaluated with measurements rather than taste, and the reasoning should survive.
+
+**Validation uses RCall** (`validation/crosscheck.jl`). Values cross as machine doubles and
+integers, so nothing is formatted. That *retires* the old "compare in the direction R →
+Julia" rule rather than following it: that rule existed only because R's `as.numeric` cannot
+reliably round-trip its own `%.17g` output. With no text there is no round trip to get wrong.
+R's `stop()` also becomes a catchable Julia exception and `NA_integer_` becomes `missing`.
+
+**Benchmarks keep R in a subprocess** (`benchmark/*.R`). An RCall round trip costs **12 µs**
+bare and **30 µs** with an argument, against about **1 µs** for the same call timed inside R.
+TreeDist's Robinson-Foulds on ten taxa is 37 µs in total, so the overhead would be a third to
+four fifths of the measurement. The timing loop must live inside R either way, which leaves
+RCall adding a dependency and a failure mode for nothing. A subprocess also gives each R
+benchmark a cold interpreter, keeping the `gc()` figures honest.
+
+`ENV["R_HOME"] = strip(read(\`R RHOME\`, String))` must be set **before** `using RCall`: RCall
+records R's location when built, and a Nix rebuild moves that store path.
 
 ## State of the codebase
 
-- Files created: `src/robinsonfoulds.jl`, `src/clustertable.jl`,
-  `test/test_robinsonfoulds.jl`, `test/test_clustertable.jl`, `benchmark/`
-- Files modified: `src/PhyloDistances.jl`, `src/taxa.jl`, `test/runtests.jl`,
-  `test/Project.toml`
+- Files created: `src/quartet.jl`, `test/test_quartet.jl`, `benchmark/quartet.R`
+- Files modified: `src/PhyloDistances.jl`, `test/runtests.jl`, `.gitignore`,
+  `benchmark/run.jl`, `benchmark/README.md`, `benchmark/results.md`,
+  `validation/crosscheck.jl`, `validation/README.md`, `validation/report.md`,
+  `validation/Project.toml`
+- Files deleted: `validation/treedist_values.R` (the crosscheck no longer shells out)
 - Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — 900 tests
-- Entry points: `RobinsonFoulds()(t1, t2)`, `pairwise(RobinsonFoulds(), trees)`
+- Test suite passes: yes — 963 tests, no R required
+- Entry points: `QuartetDistance()(t1, t2)`, `pairwise(QuartetDistance(), trees)`
 - Known issues: none
 
 ## Usable right now
@@ -59,101 +72,102 @@ using PhyloDistances
 t1 = readnw("(((Human,Chimp),Gorilla),Orang,Gibbon);")
 t2 = readnw("(((Human,Gorilla),Chimp),Gibbon,Orang);")
 
-RobinsonFoulds()(t1, t2)                     # raw distance
-RobinsonFoulds(; normalize = true)(t1, t2)   # on [0, 1]
-pairwise(RobinsonFoulds(), [t1, t2, ...])    # all-pairs matrix
+RobinsonFoulds()(t1, t2)                      # split-symmetric-difference distance
+QuartetDistance()(t1, t2)                     # four-taxon subsets resolved differently
+QuartetDistance(; normalize = true)(t1, t2)   # as a fraction of all C(n,4) quartets
+pairwise(QuartetDistance(), [t1, t2, ...])    # all-pairs matrix
 ```
 
-## Reference implementation
+## Validation status
 
-TreeDist is the reference for every metric's default convention, and **its source must be
-read before implementing one**. Both forms are set up:
+`julia --project=validation validation/crosscheck.jl` — **740 cases, zero mismatches** across
+five quantities: `RobinsonFoulds` raw and normalized against TreeDist 2.14.1, and
+`QuartetDistance` raw and normalized plus the quartet count `Q` against Quartet 1.3.0.
+Integers exactly, floats bitwise, `NaN` meeting `NaN`. It exits non-zero on any difference,
+so it can gate a release. `validation/report.md` is the committed record.
 
-- **Source**: `git clone --depth 1 https://github.com/ms609/TreeDist.git` into a scratch
-  directory. Formulations in `R/tree_distance_*.R`, heavy lifting in `src/*.cpp`.
-- **Installed CRAN build 2.14.1**, callable from `Rscript`. Compiling it against the Nix R
-  needed gettext, zlib and libuv paths supplied via a scratch `R_MAKEVARS_USER` Makevars.
+The test suite stays portable and R-free: quartet distance is covered there by hand-computed
+cases and an **independent split-based oracle** (a tree resolves `ab|cd` iff some split
+separates that pair).
 
-The randomized cross-check pattern is worth repeating for each metric: generate trees in
-Julia, write Newick and the Julia value to a TSV, and have an R script recompute and
-compare. It is not committed, since it needs R.
+## Benchmark status
+
+`julia --project=benchmark benchmark/run.jl` — R stays in a subprocess, both sides read the
+same Newick files, neither timing includes parsing. `benchmark/results.md` is the committed
+record and `run.jl` asserts both implementations returned the same distance for every pair it
+timed.
+
+| taxa | quartets | PhyloDistances | Quartet | ratio |
+|-----:|---------:|---------------:|--------:|------:|
+| 10 | 210 | 9.7 µs | 1.71 ms | 176.4× faster |
+| 50 | 230,300 | 821.2 µs | 12.21 ms | 14.9× faster |
+| 200 | 64,684,950 | 222.34 ms | 183.46 ms | 1.2× slower |
+| 477 | 2,130,031,575 | 7.68 s | 935.14 ms | 8.2× slower |
+| 700 | 9,918,641,075 | 37.40 s | — | — |
+| 1000 | 41,417,124,750 | 183.30 s | — | — |
+
+**The crossover is near 200 taxa.** Below it R's per-call overhead dominates and this package
+wins comfortably; above it the algorithms decide — exact `O(n⁴)` enumeration here against
+tqDist, which counts without enumerating — and the gap widens without bound. That is the
+measured case for CHUNK-018, and the reason the docstring states the complexity plainly.
+
+Robinson-Foulds is unchanged and still 5–29× faster than TreeDist on a single pair, 3.1×
+slower on all-pairs (the outstanding CHUNK-024 work).
+
+## Traps found this session, all still live
+
+- **TreeDist and Quartet both export `RobinsonFoulds`**, meaning different things. Whichever
+  is attached second wins, and Quartet's is a deprecated function expecting a status vector,
+  so it fails deep inside with `subscript out of bounds`. Namespace-qualify every call in R
+  code that touches both: `TreeDist::RobinsonFoulds`, `Quartet::QuartetStatus`.
+- **Quartet's 477-tip ceiling bites just below the refusal.** Above 477 it stops with "trees
+  too large for integer representation"; *at* 477 the `N` column is already `2 * Q` overflowed
+  to `NA` while `Q` itself still fits. Read `Q`/`s`/`d`/`r1`/`r2`/`u`, never `N`.
+- **`QuartetStatus` returns counts, not a distance.** Deciding which counts to combine *is*
+  choosing the convention.
 
 ## Next chunk
 
-CHUNK-007: quartet-distance-exact
+CHUNK-008: validate-rf-and-quartet — the "usable today" checkpoint that closes the critical
+path.
 
-The number of four-taxon subsets whose induced topology differs between the trees, by
-direct O(n⁴) enumeration over taxon quadruples. This is deliberately the naive algorithm:
-it is the correctness oracle for the faster version later, and fast enough for immediate
-use at modest tip counts. The docstring must state the complexity plainly.
-
-Verify: identical trees → 0; a resolved tree against a star gives the total quartet count
-`C(n,4)`; hand-computed cases on 5 and 6 tips; symmetry. TreeDist does **not** export a
-quartet distance — that is the Quartet package — so check whether a reference is available
-before relying on one.
-
-After that, CHUNK-008 (validation of RF and quartet) closes the critical path.
-
-## Values are identical to TreeDist, not merely close
-
-`validation/crosscheck.jl` compares the two implementations on 2,140 deliberately awkward
-cases — star trees, caterpillars, polytomies at three severities on one and both sides,
-rooted against unrooted, identical against maximally perturbed — with **no tolerance**:
-integers exactly, floats bitwise, `NaN` meeting `NaN`. **Zero mismatches.** It exits non-zero
-if anything differs, so it can gate a release, and should be re-run for every metric.
-
-**Compare in the direction R → Julia.** R's `as.numeric` does not reliably round-trip its own
-`%.17g` output — it lands half an ulp away on values such as `92/94`. An earlier harness fed
-Julia's output through it and reported two differences that did not exist; it would equally
-have hidden real ones. R writes, Julia parses and compares.
-
-## Performance discipline established
-
-Metrics use the most efficient algorithm available, taking TreeDist's choice as the starting
-point. Robinson-Foulds is Day's (1985) cluster-table algorithm, in `src/clustertable.jl`, and
-is now **4–25× faster than TreeDist** on a single pair.
-
-Three findings that generalize to every later metric:
-
-- **Iterating `AbstractTrees.Leaves` allocates a cursor per step** — 39,700 per comparison at
-  200 taxa. Use one typed, iterative walk that collects structure and labels together.
-- **Do not build a canonical sorted ordering the result does not depend on.** Sorting labels
-  was 64% of the remaining time at 1000 taxa. `TaxonIndex` is needed only where split masks
-  must be reproducible; comparison-only numbering suffices otherwise.
-- **`@inbounds` was assessed and rejected on evidence.** Profiling blamed string hashing and
-  allocation, not array indexing. Do not add it without a profile that blames bounds
-  checking. `@threads` is worthwhile at the all-pairs level, not inside one comparison.
-
-Profile with the `profile-performance` skill. Note the Julia MCP server was unavailable this
-session, so measurements ran as one-shot scripts through Bash rather than in a persistent
-Revise session.
+Much of its original purpose is now met by `validation/`, so its remaining job is the
+**portable, committed fixture**: seed `test/fixtures/` with tree pairs (identical, one NNI
+apart, maximally different, a rooted input exercising the warning path, a polytomy,
+zero-length branches), each with both metrics' expected values and a provenance line, and the
+tests that check against it. Values can now be sourced from the R references with confidence,
+but the fixture itself must be plain text with no absolute paths, and the tests must pass
+with no R and no network. Also confirm the naive all-pairs API gives a sensible matrix over a
+small collection.
 
 ## Watch out for
 
-- **Rooting a tree at a taxon turns its original root into a single-branch pass-through
-  node**, whose cluster duplicates its only child's. Counting both inflated every distance
-  involving a rooted input — a real bug the hand-picked reference pairs caught but 2,000
-  random *unrooted* pairs did not. Any traversal enumerating clusters must skip nodes with
-  fewer than two branches below them, and randomized checks must include rooted trees.
-- **Check whether TreeDist implements a metric before assuming a reference exists.** It has
-  no weighted RF and, as far as the export list shows, no quartet distance either.
-- **Derive normalizers from TreeDist, never from the literature.** It normalizes RF by
-  `n1 + n2`, not `2(n-3)`; they agree for binary trees and diverge once either has a
-  polytomy.
-- **`.FloorNumericalNoise` zeroes reference values** below
-  `sqrt(eps) * max(1, treesIndependentInfo)`. Metrics here implement the plain formula;
-  measure the divergence during validation and add flooring only if material.
-- **`Bool <: Real` in Julia.** The `normalize` dispatch puts `::Bool` ahead of `::Real`, so
-  `normalize = true` is "the metric's own scheme" and `normalize = 1` is "divide by one".
-- **Length arithmetic across rootings is inexact** (`0.2 + 0.4 == 0.6000000000000001`), so
-  branch-length metrics must assert with `≈`, never `==`.
-- **`splits` excludes trivial splits by default.** A metric summing over *all* branches must
-  pass `trivial = true`.
-- **`NewickTree.Node(id, data)` leaves `parent` and `children` undefined**, not empty. Build
-  with `push!(parent, child)`.
-- **`===` has no curried form**; `findfirst(===(x), v)` throws, unlike `==`.
-- **Do not reintroduce a bare `using AbstractTrees` or `using NewickTree`** — they both
-  export `children`, `getroot`, `isroot` and `print_tree`.
-- **`test/fixtures/` and `scripts/` hold `.gitkeep` placeholders.** Delete each when the
-  directory gains real content — `test/fixtures/` is due content in CHUNK-008.
-- **Julia 1.12 is the declared floor and there is no LTS back-support.**
+- **`test/fixtures/` still holds a `.gitkeep` placeholder.** CHUNK-008 gives it real content;
+  delete the placeholder then. `scripts/` likewise, later.
+- **A full benchmark run takes several minutes**, nearly all of it the quartet distance at
+  700 and 1000 taxa. Do not run it alongside anything else, or the timings are meaningless.
+- **A node with one branch below it inflates path lengths across it** — a rooted tree's root
+  is one. Harmless for quartets (subdivision preserves the tree metric), but *not* harmless
+  for anything counting nodes or clusters: it silently inflated every RF distance involving a
+  rooted input in CHUNK-006. Treat each new traversal on its own terms.
+- **Randomized checks must include rooted and polytomous trees.** `randomtree` produces
+  neither; 2,000 random unrooted pairs missed the CHUNK-006 root bug that seven hand-picked
+  pairs caught. Polytomies are also the only place the two quartet conventions differ.
+- **Check whether a reference implementation exists before assuming one.** TreeDist has no
+  weighted RF and no quartet distance; the branch-length metrics still have no reference at
+  all until phangorn is installed (CHUNK-032).
+- **Derive normalizers from the reference, never from the literature** — TreeDist normalizes
+  RF by `n1 + n2`, not `2(n-3)`.
+- **`.FloorNumericalNoise` zeroes TreeDist's values** below `sqrt(eps) * max(1, info)`.
+  Metrics here implement the plain formula; measure the divergence during validation.
+- **`Bool <: Real` in Julia**, so `normalize = true` means the metric's own scheme and
+  `normalize = 1` means divide by one.
+- **Length arithmetic across rootings is inexact**, so branch-length metrics assert with `≈`.
+- **`splits` excludes trivial splits by default**; pass `trivial = true` to sum over all
+  branches.
+- **`NewickTree.Node(id, data)` leaves `parent` and `children` undefined**; build with
+  `push!(parent, child)`.
+- **Do not reintroduce a bare `using AbstractTrees` or `using NewickTree`** — both export
+  `children`, `getroot`, `isroot` and `print_tree`.
+- **Julia 1.12 is the declared floor; there is no LTS back-support.** No Julia MCP server was
+  available this session, so everything ran as one-shot scripts through Bash.

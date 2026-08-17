@@ -277,6 +277,41 @@ Produce these live in the MCP Julia session and let them go when it exits.
   TreeDist across 2,140 cases — exact integers, bitwise floats, `NaN` meeting `NaN` — using
   `validation/crosscheck.jl`, which exits non-zero on any difference. Re-run it for every
   metric.
+- 2026-08-17 (CHUNK-007): A quartet's topology follows from **leaf-to-leaf path lengths** by
+  the four-point condition — of the three sums of opposite-pair distances, the smallest names
+  the topology and a three-way tie means unresolved. Edge counts suffice, so no branch
+  lengths are needed. Consequently **a node with a single branch below it is harmless**:
+  subdividing an edge keeps the path lengths a tree metric with positive weights, so a rooted
+  tree and its unrooted twin resolve the same quartets. Path-based metrics (CHUNK-016,
+  CHUNK-017) inherit both facts.
+- 2026-08-17 (CHUNK-007): **A quartet resolved by only one tree counts as a difference.**
+  Under that reading a resolved tree is at the maximum distance C(n,4) from the star tree.
+  The literature also contains a conflict-only reading, under which an unresolved quartet
+  agrees with everything; the two coincide on binary trees and part company on polytomies.
+  Any later quartet work — the fast algorithm, the reference validation — must state which it
+  is comparing against.
+- 2026-08-17 (CHUNK-007): **Quartet 1.3.0 is now installed** (same `R_MAKEVARS_USER` recipe as
+  TreeDist) and is the reference for quartet distance; TreeDist has none. `QuartetStatus`
+  returns counts, not a distance: `s` resolved alike, `d` resolved in conflict, `r1`/`r2`
+  resolved by one tree only, `u` unresolved in both, out of `Q` total. **Our distance is
+  `d + r1 + r2` and our `normalize = true` divisor is `Q`**, both confirmed identical across
+  740 cases.
+- 2026-08-17 (CHUNK-007, trap): **TreeDist and Quartet both export `RobinsonFoulds`**, meaning
+  different things; whichever is attached second wins, and Quartet's is a deprecated function
+  expecting a status vector, which fails deep inside with `subscript out of bounds`. Any R
+  code touching both must namespace-qualify every call.
+- 2026-08-17 (CHUNK-007): **Quartet's ceiling is 477 tips, and it bites just below the
+  refusal.** Above 477 it stops with "trees too large for integer representation"; *at* 477
+  the `N` column is already `2 * Q` overflowed to `NA` while `Q` still fits. Read
+  `Q`/`s`/`d`/`r1`/`r2`/`u`, never `N`. Benchmarks against it stop at 477; larger sizes are
+  Julia-only.
+- 2026-08-17 (CHUNK-007, harness): **R is reached two different ways, deliberately.**
+  Validation uses RCall, because values then cross as machine numbers and the `%.17g`
+  round-trip hazard disappears rather than being worked around, and R errors become catchable
+  Julia exceptions. Benchmarks keep R in a subprocess, because an RCall round trip costs
+  12–30 µs against ~1 µs for the same call timed inside R — comparable to the fastest
+  quantities measured. Timing must happen inside R; comparing values need not. Rationale is
+  recorded in both `benchmark/README.md` and `validation/README.md`.
 - 2026-08-17 (CHUNK-006, validation trap): **Compare in the direction R → Julia.** R's
   `as.numeric` does not reliably round-trip its own `%.17g` output, landing half an ulp away
   on values such as `92/94`. Passing Julia's output through it reported two differences that
@@ -528,13 +563,46 @@ Produce these live in the MCP Julia session and let them go when it exits.
   This is deliberately the naive algorithm: it is the correctness reference for CHUNK-018's
   fast version, and it is fast enough for immediate use at modest tip counts. The docstring
   must state the complexity plainly so the performance ceiling is not a surprise.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-004
 - **Verification strategy**: Identical trees → 0; a fully resolved tree against a star tree
   gives the known total quartet count C(n,4); hand-computed cases on 5 and 6 tips;
   symmetry in the arguments.
-- **Notes**: Second metric on the critical path. Resist optimizing here — CHUNK-018 exists
-  for that, and this implementation's value is that it is obviously correct.
+- **Notes**: Lives in `src/quartet.jl`, exporting `QuartetDistance`.
+
+  **Quartets are resolved by the four-point condition on topological path lengths**, not by
+  testing splits. `_topologicalpaths` tabulates the edge count between every leaf pair in
+  O(n²) — each pair filled once, where its two subtrees join — and a quartet's topology is
+  then the smallest of three sums, read in constant time. A three-way tie is the unresolved
+  case. This is both simpler and faster than scanning the split set per quartet, which would
+  add a factor of n.
+
+  **A node with one branch below it, such as a rooted tree's root, subdivides an edge** and
+  lengthens the paths across it. Quartet topologies are untouched: subdivision leaves the
+  path lengths a tree metric with positive edge weights, which is all the four-point
+  condition needs. A test pins a rooted tree against its unrooted twin at zero.
+
+  **Counting convention**: a quartet resolved by only one tree counts as a difference, which
+  is what makes the resolved-versus-star case equal C(n,4). The alternative treatment —
+  counting direct conflicts only — is recorded in Open Questions; the two agree on binary
+  trees.
+
+  `normalize = true` divides by `binomial(n, 4)`. `normalizerinfo` is that same count for
+  either tree, so `max` and `min` give the same divisor, and `normalizer` is overridden
+  because the default sum would double it.
+
+  **Validated against Quartet 1.3.0**, which was installed for the purpose (TreeDist has no
+  quartet distance). `validation/crosscheck.jl` now covers both metrics and reports **740
+  cases with zero mismatches**, the quartet distance against `d + r1 + r2` and its
+  normalization against `Q`, bitwise. The tests additionally carry an **independent
+  split-based oracle** (a tree resolves `ab|cd` iff some split separates that pair), which is
+  what keeps the suite portable and R-free.
+
+  **Faster than the reference below ~200 taxa and slower above it, by design**: 9.7 µs at 10
+  taxa (176× faster than Quartet, whose per-call overhead dominates there), 222 ms at 200
+  (1.2× slower), 7.68 s at 477 (8.2× slower), 183 s at 1000. tqDist counts the same quantity
+  without enumerating it, so the gap widens with n; this is the measured argument for
+  CHUNK-018. See `benchmark/results.md`.
 
 ### CHUNK-008: validate-rf-and-quartet
 - **Description**: Early validation milestone. Seed the reference-value fixture described
@@ -678,7 +746,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Verification strategy**: The fast implementation agrees exactly with brute-force
   enumeration on random trees up to n=12, and on the CHUNK-008 fixture.
 - **Notes**: Optional — skip if CHUNK-007's performance proves adequate for the tip counts
-  actually in use. Decide from the CHUNK-026 benchmark rather than in advance.
+  actually in use. **Measured**: the naive enumeration costs 222 ms at 200 taxa, 7.68 s at
+  477 and 183 s at 1000, against tqDist (via the Quartet R package), which counts without
+  enumerating. The crossover is near 200 taxa — below it this package is faster, above it
+  the algorithms decide. `benchmark/results.md` carries the ratio per size.
+  tqDist is the algorithm to read if this is taken up; note it is 32-bit and refuses trees
+  above 477 tips, a limit this package need not inherit.
 
 ### CHUNK-019: nni-distance-approximation
 - **Description**: Approximate nearest-neighbour-interchange distance following the Li et
@@ -875,6 +948,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-004 (split-extraction) → next: CHUNK-005
 - 2026-08-17 CHUNK-005 (random-tree-generation) → next: CHUNK-006
 - 2026-08-17 CHUNK-006 (robinson-foulds) → next: CHUNK-007
+- 2026-08-17 CHUNK-007 (quartet-distance-exact) → next: CHUNK-008
 
 ## Open Questions
 
@@ -888,8 +962,14 @@ Produce these live in the MCP Julia session and let them go when it exits.
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
 - **Quartet distance algorithm.** Whether CHUNK-018's subquadratic version is worth
-  implementing. Deferred until the CHUNK-026 benchmark shows what CHUNK-007 actually costs
-  at the tip counts in use.
+  implementing. The naive enumeration costs 0.2 s at 200 taxa and 12.7 ms at 100, so it is
+  comfortable for everyday use; the case for replacing it rests on whether trees of ~500 tips
+  and up are actually compared. Decide from the CHUNK-026 benchmark.
+- **A conflict-only quartet distance.** Settled that `QuartetDistance` counts a quartet
+  resolved by only one tree as a difference, matching the Quartet package. The conflict-only
+  reading — Quartet's `d` alone — remains a published alternative and is one line away, since
+  the reference reports both. Add it as a field on the metric, never a call keyword, if a use
+  for it appears.
 - **Package granularity.** Split extraction (CHUNK-004), the vendored assignment solver
   and matching framework (CHUNK-010), and random tree generation (CHUNK-005) are all
   generically useful beyond tree distances. The assignment solver in particular is a
