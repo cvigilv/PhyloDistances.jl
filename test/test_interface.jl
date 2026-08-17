@@ -1,34 +1,59 @@
+using Distances: Distances
 using OffsetArrays: OffsetVector
 using PhyloDistances
-using PhyloDistances: issimilarity, normalizer, requiresrooted
+using PhyloDistances: convention, isnormalized, issimilarity, normalizer, requiresrooted
 using Test
 
 # The interface performs no tree operations, so integers stand in for trees throughout:
 # they make the expected value of every call obvious by inspection.
 
 """Absolute difference; doubled under the primary convention, normalized by 10."""
-struct Gap <: TreeMetric end
+struct Gap{C<:Convention} <: TreeMetric
+    convention::C
+    normalize::Bool
+end
+Gap(; convention = TreeDistConvention(), normalize = false) =
+    Gap(Convention(convention), normalize)
 PhyloDistances._compare(::Gap, ::TreeDistConvention, a, b) = abs(a - b)
 PhyloDistances._compare(::Gap, ::PrimaryConvention, a, b) = 2 * abs(a - b)
 PhyloDistances.normalizer(::Gap, ::Convention, a, b) = 10
+Distances.result_type(m::Gap, ::Type, ::Type) = isnormalized(m) ? Float64 : Int
 
 """Implements only the TreeDist convention and defines no normalization."""
-struct TreeDistOnly <: TreeMetric end
+struct TreeDistOnly <: TreeMetric
+    convention::Convention
+    normalize::Bool
+end
+TreeDistOnly(; convention = TreeDistConvention(), normalize = false) =
+    TreeDistOnly(Convention(convention), normalize)
 PhyloDistances._compare(::TreeDistOnly, ::TreeDistConvention, a, b) = abs(a - b)
 
-"""Carries its parameter as a field, and is a rooted similarity."""
+"""Largest on identical inputs, so a similarity rather than a distance."""
+struct Closeness <: TreeSimilarity
+    convention::Convention
+    normalize::Bool
+end
+Closeness(; convention = TreeDistConvention(), normalize = false) =
+    Closeness(Convention(convention), normalize)
+PhyloDistances._compare(::Closeness, ::TreeDistConvention, a, b) = 100 - abs(a - b)
+Distances.result_type(::Closeness, ::Type, ::Type) = Int
+
+"""Carries a metric-specific parameter and is defined on rooted trees."""
 struct Scaled <: TreeMetric
     factor::Int
+    convention::Convention
+    normalize::Bool
 end
+Scaled(factor; convention = TreeDistConvention(), normalize = false) =
+    Scaled(factor, Convention(convention), normalize)
 PhyloDistances._compare(m::Scaled, ::TreeDistConvention, a, b) = m.factor * abs(a - b)
 PhyloDistances.requiresrooted(::Scaled) = true
-PhyloDistances.issimilarity(::Scaled) = true
 
 @testset "Convention" begin
     @test Convention(:treedist) === TreeDistConvention()
     @test Convention(:primary) === PrimaryConvention()
 
-    # A Convention passes through, so callers may use either spelling.
+    # A Convention passes through, so constructors may accept either spelling.
     @test Convention(TreeDistConvention()) === TreeDistConvention()
 
     @test Symbol(TreeDistConvention()) === :treedist
@@ -38,103 +63,119 @@ PhyloDistances.issimilarity(::Scaled) = true
     @test_throws "expected :treedist or :primary" Convention(:robinson)
 end
 
-@testset "traits" begin
-    @test requiresrooted(Gap()) === false
-    @test issimilarity(Gap()) === false
+@testset "type hierarchy" begin
+    @test TreeMetric <: Distances.SemiMetric
+    @test Gap() isa Distances.PreMetric
 
-    @test requiresrooted(Scaled(3)) === true
-    @test issimilarity(Scaled(3)) === true
+    # A similarity is deliberately outside the Distances hierarchy: SemiMetric's pairwise
+    # takes the zero diagonal on faith, which would report zero self-similarity.
+    @test !(TreeSimilarity <: Distances.PreMetric)
+    @test Closeness() isa TreeComparison
+    @test Gap() isa TreeComparison
 end
 
-@testset "compare" begin
+@testset "traits" begin
+    @test convention(Gap()) === TreeDistConvention()
+    @test convention(Gap(; convention = :primary)) === PrimaryConvention()
+
+    @test isnormalized(Gap()) === false
+    @test isnormalized(Gap(; normalize = true)) === true
+
+    @test requiresrooted(Gap()) === false
+    @test requiresrooted(Scaled(3)) === true
+
+    @test issimilarity(Gap()) === false
+    @test issimilarity(Closeness()) === true
+end
+
+@testset "applying a metric" begin
+    @testset "entry points agree" begin
+        @test Gap()(3, 10) == 7
+        @test evaluate(Gap(), 3, 10) == 7
+        @test evaluate(Closeness(), 3, 10) == 93
+    end
+
     @testset "symmetry" begin
-        @test compare(Gap(), 3, 10) == compare(Gap(), 10, 3)
+        @test Gap()(3, 10) == Gap()(10, 3)
     end
 
-    @testset "convention selection" begin
-        @test compare(Gap(), 3, 10; convention = :treedist) == 7
-        @test compare(Gap(), 3, 10; convention = :primary) == 14
-
-        # Convention instances are accepted alongside the symbol shorthand.
-        @test compare(Gap(), 3, 10; convention = PrimaryConvention()) == 14
-
-        @test compare(Gap(), 3, 10) == compare(Gap(), 3, 10; convention = :treedist)
+    @testset "convention is a field, not a keyword" begin
+        @test Gap(; convention = :treedist)(3, 10) == 7
+        @test Gap(; convention = :primary)(3, 10) == 14
+        @test Gap(; convention = PrimaryConvention())(3, 10) == 14
+        @test Gap()(3, 10) == Gap(; convention = :treedist)(3, 10)
     end
 
-    @testset "normalization" begin
-        @test compare(Gap(), 3, 10; normalize = true) == 0.7
+    @testset "normalization is a field, not a keyword" begin
+        @test Gap(; normalize = true)(3, 10) == 0.7
 
-        # Normalization applies to the value the convention produced, not to the default.
-        @test compare(Gap(), 3, 10; convention = :primary, normalize = true) == 1.4
+        # Normalization applies to the value the convention produced.
+        @test Gap(; convention = :primary, normalize = true)(3, 10) == 1.4
     end
 
     @testset "metric parameters live on the metric" begin
-        @test compare(Scaled(3), 1, 5) == 12
-        @test compare(Scaled(10), 1, 5) == 40
+        @test Scaled(3)(1, 5) == 12
+        @test Scaled(10)(1, 5) == 40
     end
 
     @testset "unimplemented convention reports the metric and the convention" begin
-        @test compare(TreeDistOnly(), 3, 10) == 7
+        @test TreeDistOnly()(3, 10) == 7
         @test_throws "TreeDistOnly does not implement the :primary convention" begin
-            compare(TreeDistOnly(), 3, 10; convention = :primary)
+            TreeDistOnly(; convention = :primary)(3, 10)
         end
     end
 
     @testset "missing normalization is reported, not silently skipped" begin
         @test_throws "no normalization is defined for TreeDistOnly" begin
-            compare(TreeDistOnly(), 3, 10; normalize = true)
+            TreeDistOnly(; normalize = true)(3, 10)
         end
-    end
-
-    @testset "metrics are applied through compare, not by calling them" begin
-        @test !hasmethod(Gap(), Tuple{Int,Int})
     end
 end
 
 @testset "pairwise" begin
     trees = [0, 3, 10]
 
-    @testset "agrees with repeated compare" begin
+    @testset "metric: agrees with repeated application" begin
         D = pairwise(Gap(), trees)
         for i in eachindex(trees), j in eachindex(trees)
-            @test D[i, j] == compare(Gap(), trees[i], trees[j])
+            @test D[i, j] == Gap()(trees[i], trees[j])
         end
+        @test D == [0 3 10; 3 0 7; 10 7 0]
     end
 
-    @testset "shape, symmetry and diagonal" begin
+    @testset "metric: shape, symmetry and zero diagonal" begin
         D = pairwise(Gap(), trees)
         @test size(D) == (3, 3)
         @test D == D'
         @test all(iszero(D[i, i]) for i in axes(D, 1))
-        @test D == [0 3 10; 3 0 7; 10 7 0]
     end
 
-    @testset "keywords reach the metric" begin
-        @test pairwise(Gap(), trees; convention = :primary) == 2 .* pairwise(Gap(), trees)
-        @test pairwise(Gap(), trees; normalize = true) == pairwise(Gap(), trees) ./ 10
+    @testset "similarity: the diagonal is computed, not assumed" begin
+        D = pairwise(Closeness(), trees)
+        @test D == D'
+        @test all(D[i, i] == 100 for i in axes(D, 1))
+        @test D == [100 97 90; 97 100 93; 90 93 100]
     end
 
-    @testset "element type follows the metric" begin
+    @testset "two-collection form" begin
+        @test pairwise(Closeness(), [0, 3], [10]) == reshape([90, 93], 2, 1)
+    end
+
+    @testset "element type follows result_type" begin
         @test eltype(pairwise(Gap(), trees)) === Int
-        @test eltype(pairwise(Gap(), trees; normalize = true)) === Float64
+        @test eltype(pairwise(Gap(; normalize = true), trees)) === Float64
+        @test eltype(pairwise(Closeness(), trees)) === Int
     end
 
-    @testset "empty collection" begin
-        D = pairwise(Gap(), Int[])
-        @test size(D) == (0, 0)
-        @test eltype(D) === Float64
-    end
-
-    @testset "axes of the result track the input" begin
+    @testset "results are 1-based even for an offset input" begin
+        # Distances.jl indexes observations by position rather than by key, and this
+        # package follows it. Entries refer to positions in the collection.
         offset = OffsetVector(trees, -1:1)
-        D = pairwise(Gap(), offset)
 
-        @test axes(D) == (-1:1, -1:1)
-        for i in axes(offset, 1), j in axes(offset, 1)
-            @test D[i, j] == compare(Gap(), offset[i], offset[j])
+        for m in (Gap(), Closeness())
+            D = pairwise(m, offset)
+            @test axes(D) == (Base.OneTo(3), Base.OneTo(3))
+            @test D == pairwise(m, trees)
         end
-
-        # Same values as the 1-based call, just relabelled.
-        @test parent(D) == pairwise(Gap(), trees)
     end
 end

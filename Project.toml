@@ -5,9 +5,11 @@ authors = ["Carlos Vigil-Vásquez"]
 
 [deps]
 AbstractTrees = "1520ce14-60c1-5f80-bbc7-55ef81b5835c"
+Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
 NewickTree = "b0a14db8-6308-4ebc-8917-f72cd81f5094"
 
 [compat]
 AbstractTrees = "0.4.5"
+Distances = "0.10.12"
 NewickTree = "0.4.0"
 julia = "1.12"
