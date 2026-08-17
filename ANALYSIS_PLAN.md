@@ -246,6 +246,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
   splits, not the symmetric difference: a split in both trees contributes the *difference*
   of its lengths. They also need `trivial = true` so pendant branches count. A tree without
   branch lengths is rejected rather than yielding `NaN`.
+- 2026-08-17 (CHUNK-006, benchmark): Against TreeDist 2.14.1, a single Robinson-Foulds call
+  is **~10× slower** at 200–1000 taxa (faster below ~30, where R's call overhead dominates),
+  and all-pairs is **72.5× slower** because each pair re-extracts both split sets. Two
+  distinct fixes: hoist per-tree preprocessing out of the all-pairs loop (CHUNK-024), and
+  pack splits into a `UInt64` for n ≤ 64 to drop the O(n) hashing. Neither affects results.
+  Runner and results live in `benchmark/`.
 
 ## Chunks
 
@@ -722,7 +728,10 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Verification strategy**: The matrix agrees entrywise with repeated pairwise calls; the
   diagonal is zero (or maximal, for similarities); preprocessing allocations scale as O(n)
   in the number of trees rather than O(n²).
-- **Notes**:
+- **Notes**: **Measured motivation**: all-pairs Robinson-Foulds over 40 trees of 60 taxa
+  runs 72.5× slower than TreeDist, at 179 µs per pair against 2.5 µs — far worse than the
+  ~10× single-pair ratio, because every pair re-extracts both trees' split sets. This is the
+  largest available win and changes no results. See `benchmark/`.
 
 ### CHUNK-025: visualization-extension
 - **Description**: Implement the four composable primitives from Target Outputs
@@ -838,11 +847,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
 
 ## Open Questions
 
-- **Split representation at scale.** Splits are `BitVector`s used as `Dict` keys, so
-  hashing and comparison are O(n) per split. For n ≤ 64 a `UInt64` mask would be
-  dramatically faster, and the benchmark targets go to 1000 tips. Deferred as premature
-  until CHUNK-026 shows whether it matters; the `Splits` API does not expose the
-  representation, so this can change without touching callers.
+- **Split representation at scale — now measured.** Splits are `BitVector`s used as hash
+  keys, so each hash and comparison is O(n) and the set operations come to O(n²). At 200
+  taxa a single Robinson-Foulds call spends ~180 µs on the taxon index, ~500 µs extracting
+  both split sets, and **~600 µs in `symdiff`** — nearly half the total. Packing a split
+  into a `UInt64` for n ≤ 64 would remove that factor. The `Splits` API hides the
+  representation, so this changes nothing for callers. See `benchmark/`.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
