@@ -1,22 +1,34 @@
 #!/usr/bin/env julia
 #
-# Checks that this package's values are identical to TreeDist's, not merely close.
+# Checks that this package's values are identical to the R implementations it reproduces,
+# not merely close.
 #
 #     julia --project=validation validation/crosscheck.jl [ncases]
 #
 # Generates deliberately awkward trees, computes each metric here and in R, and compares
 # integers exactly and floating-point values bitwise. Writes validation/report.md.
 #
-# Direction matters. R's `as.numeric` does not reliably round-trip its own `%.17g` output —
-# it can land half an ulp away — so R writes the values and Julia parses and compares them.
-# Comparing the other way measures R's parser rather than either implementation.
+# R is called through RCall, so values cross as machine doubles and integers rather than as
+# text. That matters: R's `as.numeric` does not reliably round-trip its own `%.17g` output,
+# so a comparison routed through a file has to be written in one particular direction to
+# stay honest. Passing the values in memory removes the question.
 
+using Logging: Logging
 using PhyloDistances
 using PhyloDistances: NewickTree
 using Printf
 using Random
 
 const HERE = @__DIR__
+
+if Sys.which("R") === nothing
+    error("R not found on PATH; the crosscheck compares against TreeDist and Quartet")
+end
+
+# RCall records where R lives when it is built, and a Nix rebuild moves that path. Asking
+# the R on PATH where it lives keeps the two in step without rebuilding.
+haskey(ENV, "R_HOME") || (ENV["R_HOME"] = strip(read(`R RHOME`, String)))
+using RCall
 
 star(n) = readnw("(" * join(("T$i:1.0" for i in 1:n), ",") * ");")
 
@@ -103,83 +115,161 @@ function cases(rng, extra::Int)
     return out
 end
 
+"""
+Load the R side and define the one function the comparison calls.
+
+`QuartetStatus` counts the four-taxon subsets both trees resolve the same way (`s`), resolve
+in conflicting ways (`d`), resolve in only one tree (`r1`, `r2`), and leave unresolved in
+both (`u`), out of `Q` in total. It also reports `N = 2 * Q`, which is never read here: it
+overflows R's 32-bit integers before `Q` does.
+"""
+function setupR()
+    # TreeDist and Quartet both export `RobinsonFoulds`, meaning different things, and
+    # whichever is attached second wins. Every call is qualified so load order cannot
+    # decide which function runs.
+    R"""
+    suppressMessages(library(ape))
+    suppressMessages(loadNamespace("TreeDist"))
+    suppressMessages(loadNamespace("Quartet"))
+
+    compare <- function(nw1, nw2) {
+      t1 <- read.tree(text = nw1)
+      t2 <- read.tree(text = nw2)
+      st <- Quartet::QuartetStatus(c(t1, t2))[2, ]
+      c(rf     = TreeDist::RobinsonFoulds(t1, t2),
+        rfnorm = TreeDist::RobinsonFoulds(t1, t2, normalize = TRUE),
+        Q      = st[["Q"]],
+        d      = st[["d"]],
+        r1     = st[["r1"]],
+        r2     = st[["r2"]])
+    }
+    """
+    return rcopy(R"""
+      paste("TreeDist", packageVersion("TreeDist"),
+            "| Quartet", packageVersion("Quartet"),
+            "| ape", packageVersion("ape"),
+            "| R", paste0(R.version$major, ".", R.version$minor))
+    """)
+end
+
+# Half the cases pass a rooted tree to an unrooted metric on purpose, and each one warns
+# that the root position is ignored. That is the behaviour under test, not something to
+# report hundreds of times. R's own warnings stay visible: they are raised outside this.
+quiet(f) = Logging.with_logger(f, Logging.SimpleLogger(stderr, Logging.Error))
+
+"""
+Compare one pair, returning the mismatch descriptions per quantity — empty where the two
+implementations agree — and whether the reference normalized Robinson-Foulds was `NaN`.
+
+`NaN` counts as agreement only against `NaN`, which is what a normalized distance gives when
+neither tree carries a split and the divisor is zero.
+"""
+function checkpair(t1, t2, label, nw1, nw2)
+    rf, rfnorm, q, d, r1, r2 = rcopy(R"compare($nw1, $nw2)")
+    jrf, jrfn, jq, jqn = quiet() do
+        (
+            RobinsonFoulds()(t1, t2),
+            RobinsonFoulds(; normalize = true)(t1, t2),
+            QuartetDistance()(t1, t2),
+            QuartetDistance(; normalize = true)(t1, t2),
+        )
+    end
+    bad = Pair{Symbol,String}[]
+
+    jrf == rf || push!(bad, :rf => "$label: R=$rf here=$jrf")
+
+    if isnan(rfnorm)
+        isnan(jrfn) || push!(bad, :rfnorm => "$label: R=NaN here=$(repr(jrfn))")
+    else
+        jrfn === rfnorm || push!(bad, :rfnorm => "$label: R=$(repr(rfnorm)) here=$(repr(jrfn))")
+    end
+
+    # A quartet that only one tree resolves counts as a difference here, so the reference
+    # value is `d + r1 + r2` rather than `d` alone.
+    refq = Int(d + r1 + r2)
+    jq == refq || push!(bad, :quartet => "$label: R=$refq (d=$d r1=$r1 r2=$r2) here=$jq")
+
+    # Both sides must also agree on how many quartets there are to divide by.
+    ntaxa = length(quiet(() -> taxonindex(t1, t2)))
+    Int(q) == binomial(ntaxa, 4) ||
+        push!(bad, :quartetq => "$label: R Q=$q here=$(binomial(ntaxa, 4))")
+
+    refqn = refq / q
+    jqn === refqn || push!(bad, :quartetnorm => "$label: R=$(repr(refqn)) here=$(repr(jqn))")
+
+    return bad, isnan(rfnorm)
+end
+
+const QUANTITIES = [
+    :rf => ("`RobinsonFoulds()`", "TreeDist", "exact integer"),
+    :rfnorm => ("`RobinsonFoulds(normalize = true)`", "TreeDist", "bitwise float"),
+    :quartet => ("`QuartetDistance()`", "Quartet", "exact integer"),
+    :quartetq => ("quartet count `Q`", "Quartet", "exact integer"),
+    :quartetnorm => ("`QuartetDistance(normalize = true)`", "Quartet", "bitwise float"),
+]
+
 function main()
     extra = isempty(ARGS) ? 1000 : parse(Int, ARGS[1])
     rng = Xoshiro(20260817)
     pairs = cases(rng, extra)
+    @info "generated $(length(pairs)) cases"
 
-    jl = joinpath(HERE, "julia_cases.tsv")
-    open(jl, "w") do io
-        println(io, "label\tnw1\tnw2")
-        for (a, b, label) in pairs
-            println(io, label, "\t", NewickTree.nwstr(a), "\t", NewickTree.nwstr(b))
-        end
-    end
-    @info "wrote $(length(pairs)) cases"
+    versions = setupR()
+    @info "R ready" versions
 
-    if Sys.which("Rscript") === nothing
-        @error "Rscript not found; cannot compare against TreeDist"
-        return nothing
-    end
-
-    rvals = joinpath(HERE, "r_values.tsv")
-    info = read(`Rscript $(joinpath(HERE, "treedist_values.R")) $jl $rvals`, String)
-    @info "TreeDist finished" info = strip(info)
-
-    rf_bad = String[]
-    norm_bad = String[]
-    nan_matched = 0
+    mismatches = Dict(first(q) => String[] for q in QUANTITIES)
+    nanmatched = 0
     total = 0
 
-    for row in split(read(rvals, String), '\n'; keepempty = false)[2:end]
-        label, nw1, nw2, rrf, rnorm = split(row, '\t')
+    for (t1, t2, label) in pairs
+        nw1, nw2 = NewickTree.nwstr(t1), NewickTree.nwstr(t2)
         total += 1
-        t1, t2 = readnw(String(nw1)), readnw(String(nw2))
-
-        jrf = RobinsonFoulds()(t1, t2)
-        jrf == parse(Int, rrf) ||
-            push!(rf_bad, "$label: TreeDist=$rrf here=$jrf")
-
-        jnm = RobinsonFoulds(; normalize = true)(t1, t2)
-        if rnorm == "NaN"
-            isnan(jnm) ? (nan_matched += 1) :
-                push!(norm_bad, "$label: TreeDist=NaN here=$(repr(jnm))")
-        else
-            rv = parse(Float64, rnorm)
-            jnm === rv ||
-                push!(norm_bad, "$label: TreeDist=$(repr(rv)) here=$(repr(jnm))")
+        bad, wasnan = checkpair(t1, t2, label, nw1, nw2)
+        wasnan && (nanmatched += 1)
+        for (quantity, message) in bad
+            push!(mismatches[quantity], message)
         end
+        total % 250 == 0 && @info "compared $total / $(length(pairs))"
     end
 
     io = IOBuffer()
-    println(io, "# Agreement with TreeDist\n")
+    println(io, "# Agreement with TreeDist and Quartet\n")
     println(io, "Generated by `julia --project=validation validation/crosscheck.jl`.\n")
     println(io, "Integers are compared exactly and floating-point values bitwise — no ")
-    println(io, "tolerance anywhere. Cases cover trees with no splits at all, maximal ")
-    println(io, "imbalance, polytomies on one and both sides, rooted against unrooted, and ")
-    println(io, "identical against maximally different, alongside random trees.\n")
-    println(io, "- Julia ", VERSION, ", ", strip(info))
+    println(io, "tolerance anywhere. Values cross from R through RCall as machine numbers, ")
+    println(io, "so nothing is routed through text. Cases cover trees with no splits at ")
+    println(io, "all, maximal imbalance, polytomies on one and both sides, rooted against ")
+    println(io, "unrooted, and identical against maximally different, alongside random ")
+    println(io, "trees.\n")
+    println(io, "- Julia ", VERSION, ", ", strip(versions))
     println(io, "- Cases compared: ", total)
     println(io)
-    println(io, "| quantity | comparison | mismatches |")
-    println(io, "|---|---|---:|")
-    println(io, "| `RobinsonFoulds()` | exact integer | ", length(rf_bad), " |")
-    println(io, "| `RobinsonFoulds(normalize = true)` | bitwise float | ", length(norm_bad), " |")
+    println(io, "| quantity | reference | comparison | mismatches |")
+    println(io, "|---|---|---|---:|")
+    for (quantity, (name, pkg, kind)) in QUANTITIES
+        println(io, "| ", name, " | ", pkg, " | ", kind, " | ", length(mismatches[quantity]), " |")
+    end
     println(io)
-    println(io, "`NaN` agreed with `NaN` in ", nan_matched,
-            " cases, where neither tree carries a split and the normalizer is zero.\n")
-    if isempty(rf_bad) && isempty(norm_bad)
+    println(io, "`RobinsonFoulds(normalize = true)` was `NaN` in ", nanmatched,
+            " cases, where neither tree carries a split and the divisor is zero.\n")
+    println(io, "The quartet distance counts a four-taxon subset that only one tree ")
+    println(io, "resolves as a difference, so the reference value is Quartet's `d + r1 + r2`. ")
+    println(io, "`Q`, the number of four-taxon subsets, is checked against `binomial(n, 4)` ")
+    println(io, "so that both sides agree on the divisor as well as the distance.\n")
+
+    failed = sum(length, values(mismatches))
+    if failed == 0
         println(io, "Every value is identical.")
     else
         println(io, "## Mismatches\n")
-        for m in first(vcat(rf_bad, norm_bad), 40)
+        for (quantity, _) in QUANTITIES, m in first(mismatches[quantity], 20)
             println(io, "- ", m)
         end
     end
     write(joinpath(HERE, "report.md"), String(take!(io)))
 
-    @info "compared $total cases" rf_mismatches = length(rf_bad) norm_mismatches = length(norm_bad)
-    isempty(rf_bad) && isempty(norm_bad) || error("values differ from TreeDist")
+    @info "compared $total cases" mismatches = failed
+    failed == 0 || error("values differ from the R reference")
     return nothing
 end
 

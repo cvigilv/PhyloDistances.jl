@@ -1,21 +1,66 @@
-# Agreement with TreeDist
+# Agreement with TreeDist and Quartet
 
-This package reproduces the R package [TreeDist](https://github.com/ms609/TreeDist), so
-matching its values is the point and being close is not good enough. `crosscheck.jl`
-compares the two on deliberately awkward trees, exactly.
+This package reproduces two R packages — [TreeDist](https://github.com/ms609/TreeDist) for
+Robinson-Foulds and [Quartet](https://github.com/ms609/Quartet) for the quartet distance —
+so matching their values is the point and being close is not good enough. `crosscheck.jl`
+compares them on deliberately awkward trees, exactly.
 
 ```console
 $ julia --project=validation validation/crosscheck.jl [ncases]
 ```
 
-It writes tree pairs, has `treedist_values.R` compute TreeDist's answers, compares them, and
-renders `report.md`. It exits non-zero if any value differs, so it can gate a release.
-`julia_cases.tsv` and `r_values.tsv` are regenerated each run and untracked; `report.md` is
-kept.
+It generates tree pairs, computes every quantity on both sides, and renders `report.md`. It
+exits non-zero if any value differs, so it can gate a release.
 
 Integers are compared with `==` and floating-point values with `===` — bitwise, no
 tolerance. `NaN` must meet `NaN`, which happens when neither tree carries a split and the
 normalizer is zero.
+
+## Values cross in memory, not as text
+
+R is called through [RCall](https://github.com/JuliaInterop/RCall.jl), so every value
+arrives as a machine double or integer and no formatting is involved. This is not merely
+tidier. R's `as.numeric` does not reliably round-trip R's own `%.17g` output — it can land
+half an ulp away on values such as `92/94` — so a comparison routed through a file has to be
+written in one particular direction (R writes, Julia parses) to avoid reporting differences
+that do not exist, and to avoid hiding real ones. Passing values in memory removes the
+question rather than working around it.
+
+Two further conveniences follow: R's `stop()` surfaces as a catchable Julia exception rather
+than a subprocess exit code, and `NA_integer_` arrives as `missing` rather than the string
+`"NA"`.
+
+RCall records where R lives when it is built, which on NixOS goes stale whenever a rebuild
+moves the store path. `crosscheck.jl` sets `R_HOME` from the `R` on `PATH` before loading
+RCall, so the two stay in step without a rebuild.
+
+**The benchmarks deliberately do not use RCall** — see `benchmark/README.md`. An RCall round
+trip costs 12–30 µs against roughly 1 µs for the same call timed inside R, which is
+comparable to the fastest quantities being benchmarked. Timing has to happen inside R;
+comparing values does not.
+
+## The two R packages collide
+
+TreeDist and Quartet both export a function named `RobinsonFoulds`, meaning different
+things, and whichever is attached second wins. Quartet's is deprecated and expects a quartet
+status vector, so calling it with two trees fails somewhere deep inside with
+`subscript out of bounds`. Every call in `crosscheck.jl` is namespace-qualified
+(`TreeDist::RobinsonFoulds`, `Quartet::QuartetStatus`) so that load order cannot decide
+which function runs.
+
+## What the quartet reference actually reports
+
+`Quartet::QuartetStatus` does not return a distance. It returns counts over the four-taxon
+subsets: `s` resolved the same way by both trees, `d` resolved in conflicting ways, `r1` and
+`r2` resolved by only the first or only the second tree, `u` unresolved in both, out of `Q`
+in total.
+
+`QuartetDistance` counts a subset that only one tree resolves as a difference, so the
+reference value is **`d + r1 + r2`**. The crosscheck also asserts `Q == binomial(n, 4)`, so
+the two sides are held to agree on the divisor as well as on the distance.
+
+The `N` column is never read. It is `2 * Q`, which overflows R's 32-bit integers at 477 tips
+while `Q` itself still fits.
 
 ## Cases
 
@@ -29,10 +74,6 @@ That mix is not decoration. Counting the clusters of a rooted tree twice — a r
 rooting at a taxon leaves the original root with a single branch below it — passed two
 thousand random *unrooted* pairs and was caught by a rooted one.
 
-## Compare in the right direction
-
-R writes its values and Julia parses and compares them. Not the other way around:
-`as.numeric` in R does not reliably round-trip R's own `%.17g` output, landing half an ulp
-away on values such as `92/94`. Feeding Julia's output through it reports differences that
-do not exist — and would equally hide real ones. Julia's parser round-trips correctly, so
-the comparison happens there.
+Polytomies matter for the quartet distance in particular, because that is the only place the
+two published counting conventions disagree: on binary trees nothing is unresolved, so
+`r1 = r2 = u = 0` and every definition coincides.
