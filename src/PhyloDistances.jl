@@ -41,6 +41,7 @@ using NewickTree: NewickTree, readnw
 export TreeMetric, TreeSimilarity, TreeComparison
 export Convention, TreeDistConvention, PrimaryConvention
 export TaxonIndex, taxa, taxonindex
+export Splits, splits
 
 # Distances.jl is the interface these metrics implement, and NewickTree.jl reads the trees
 # they consume; re-exporting means a user loading those packages too sees one set of
@@ -48,10 +49,11 @@ export TaxonIndex, taxa, taxonindex
 export colwise, colwise!, evaluate, pairwise, pairwise!, result_type
 export readnw
 
-public convention, isnormalized, isrooted, issimilarity, normalizer, requiresrooted,
-    taxonlabel, taxonlabels
+public branchlength, convention, incidencematrix, isnormalized, isrooted, issimilarity,
+    istrivial, normalizer, requiresrooted, taxonlabel, taxonlabels
 
 include("taxa.jl")
+include("splits.jl")
 include("interface.jl")
 
 end
