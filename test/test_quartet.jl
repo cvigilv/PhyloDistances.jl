@@ -157,4 +157,39 @@ end
             QuartetDistance()(readnw("(A,B,(C,D));"), readnw("(A,B,(C,E));"))
         end
     end
+
+    @testset "algorithm selection" begin
+        @test_throws "expected :fast or :naive" QuartetDistance(; algorithm = :quick)
+
+        t1, t2 = readnw("(A,B,((C,D),E));"), readnw("(A,B,((C,E),D));")
+        @test QuartetDistance(; algorithm = :naive)(t1, t2) ==
+              QuartetDistance(; algorithm = :fast)(t1, t2)
+    end
+
+    @testset "the fast algorithm agrees with direct enumeration" begin
+        rng = Xoshiro(23)
+        fast, naive = QuartetDistance(; algorithm = :fast), QuartetDistance(; algorithm = :naive)
+
+        @testset "random binary trees, n = $n" for n in (4, 5, 8, 13, 21)
+            for _ in 1:8
+                t1, t2 = randomtree(rng, n), randomtree(rng, n)
+                @test fast(t1, t2) == naive(t1, t2)
+            end
+        end
+
+        @testset "one tree polytomous" begin
+            # A polytomy on one side only still falls on the fast path: an unresolved
+            # quartet there can never be concordant, since the other tree resolves it.
+            resolved = readnw("(A,B,((C,D),E),F,G);")
+            polytomous = readnw("(A,B,C,D,E,F,G);")
+            @test fast(resolved, polytomous) == naive(resolved, polytomous)
+        end
+
+        @testset "both trees polytomous falls back and warns" begin
+            t1 = readnw("(A,B,C,D,E,F,G);")
+            t2 = readnw("(A,B,C,(D,E),(F,G));")
+            got = @test_logs (:warn, r"falling back") fast(t1, t2)
+            @test got == naive(t1, t2)
+        end
+    end
 end
