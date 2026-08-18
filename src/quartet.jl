@@ -22,16 +22,17 @@ reference formulation to diverge from.
 
 # Algorithm
 
-`algorithm = :fast` (the default) counts concordant quartets without enumerating them; see
-[`_fastconcordantcount`](@ref) for the method and its complexity. It requires that at least
-one of the two trees be fully resolved (binary); if both carry a polytomy, it falls back to
+`algorithm = :fast` (the default) counts concordant quartets without enumerating them, in
+`O(n³)`; see [`_fastconcordantcount`](@ref) for the method. It requires that at least one
+of the two trees be fully resolved (binary); if both carry a polytomy, it falls back to
 `:naive` and warns, since exactness cannot be guaranteed without the general (and
-unimplemented) two-polytomy case. `algorithm = :naive` always uses the direct `O(n⁴)`
-enumeration below, which remains the correctness oracle the fast path is tested against.
+unimplemented) two-polytomy case.
 
-`O(n²)` to tabulate the leaf-to-leaf path lengths of each tree, then `O(n⁴)` to enumerate
-the `binomial(n, 4)` quartets, each resolved in constant time. The quartet count grows
-steeply: 210 subsets at 10 taxa, 64 million at 200, 41 billion at 1000.
+`algorithm = :naive` always uses direct enumeration: `O(n²)` to tabulate the leaf-to-leaf
+path lengths of each tree, then `O(n⁴)` to enumerate the `binomial(n, 4)` quartets, each
+resolved in constant time. It remains the correctness oracle the fast path is tested
+against. The quartet count grows steeply: 210 subsets at 10 taxa, 64 million at 200,
+41 billion at 1000 — `:naive` is the right choice only at modest taxon counts.
 
 Estabrook, G.F., McMorris, F.R. and Meacham, C.A. (1985). *Comparison of undirected
 phylogenetic trees based on subtrees of four evolutionary units.* Systematic Zoology
@@ -173,7 +174,7 @@ function _fastconcordantcount(
         order2, up2 = _rootedorder(f2, pos2, w)
         code2 = _daynumbers(f2, order2, pos2, n)
         lo2, hi2, _, _ = _intervals(f2, order2, up2, pos2, code2)
-        _fillcrosspairs!(lca2lo, lca2hi, f2, order2, up2, lo2, hi2)
+        _fillcrosspairs!(lca2lo, lca2hi, ranges, f2, order2, up2, lo2, hi2)
 
         for taxon in 1:n
             sigma[code1[taxon]] = code2[taxon]
@@ -201,10 +202,10 @@ end
 # and every pair has its most recent common ancestor at exactly one node, so this reaches
 # each of the O(n²) pairs once.
 function _fillcrosspairs!(
-    lca_lo::Matrix{Int32}, lca_hi::Matrix{Int32}, flat::FlatTree,
-    order::Vector{Int32}, up::Vector{Int32}, lo::Vector{Int32}, hi::Vector{Int32}
+    lca_lo::Matrix{Int32}, lca_hi::Matrix{Int32}, ranges::Vector{Tuple{Int32,Int32}},
+    flat::FlatTree, order::Vector{Int32}, up::Vector{Int32}, lo::Vector{Int32},
+    hi::Vector{Int32}
 )
-    ranges = Tuple{Int32,Int32}[]
     for node in order
         kids, parent = _neighbours(flat, node)
         from = up[node]
