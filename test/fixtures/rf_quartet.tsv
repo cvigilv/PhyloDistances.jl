@@ -1,0 +1,19 @@
+# Expected Robinson-Foulds and quartet distances for named tree pairs.
+#
+# The numeric columns are generated from TreeDist and Quartet by
+# `validation/fixture.jl`, which also re-checks them against those packages; the
+# `provenance` column gives the independent derivation that corroborates each row. See
+# README.md in this directory for the column meanings.
+#
+# Tab-separated. Lines beginning with "#" and blank lines are comments; the first
+# remaining line names the columns.
+case	newick1	newick2	rf	rf_normalized	quartet	quartet_normalized	provenance
+identical-binary	(A,B,((C,D),(E,F)));	(A,B,((C,D),(E,F)));	0	0.0	0	0.0	Analytic: a tree shares every split and every quartet with itself, and the RF normalizer is 3+3.
+four-taxa-one-quartet	(A,B,(C,D));	(A,C,(B,D));	2	1.0	1	1.0	Analytic: four taxa admit one split and one quartet per tree, and these two trees disagree on both.
+one-nni-apart	(A,B,((C,D),E));	(A,B,((C,E),D));	2	0.5	2	0.4	Hand: the move exchanges CD for CE, one split of the two each tree carries; quartets ABCD and ABCE flip, of the 5 on five taxa.
+star-vs-resolved	(A,B,C,D,E,F);	(A,B,(((C,D),E),F));	3	1.0	15	1.0	Analytic: the star carries no split and resolves no quartet, so RF is the other tree's 3 splits over a normalizer of 0+3, and all 15 quartets differ.
+rooted-vs-unrooted-twin	((A,B),(C,D));	(A,B,(C,D));	0	0.0	0	0.0	Analytic: the root's two branches induce the single bipartition AB|CD, so the rooted tree read as unrooted is the other tree. Comparing it warns.
+polytomy-vs-resolved	(A,B,(C,D),(E,F));	(A,B,(((C,D),E),F));	3	0.6	8	0.5333333333333333	Hand: the trees share only CD, so RF is 1+2 over a normalizer of 2+3. Four quartets the polytomy leaves unresolved plus four it resolves differently give 8 of 15.
+no-shared-splits	(A,B,(((C,D),E),F));	(A,C,(((B,E),D),F));	6	1.0	13	0.8666666666666667	Hand: no split is common to the two caterpillars, so RF is 3+3 over 3+3. Only ADEF and BCDE are resolved alike, leaving 13 of 15.
+zero-length-branches	(A:0,B:0,((C:0,D:0):0,E:0):0);	(A:0.5,B:0.5,((C:0.5,E:0.5):0.5,D:0.5):0.5);	2	0.5	2	0.4	Analytic: both metrics read topology alone, so this is one-nni-apart whatever the lengths. Zero-length branches still count as splits.
+both-stars	(A,B,C,D,E);	(A,B,C,D,E);	0	NaN	0	0.0	Analytic: neither star carries a split, so RF is 0 over a normalizer of 0. The quartet normalizer is the taxon count's 5 either way.

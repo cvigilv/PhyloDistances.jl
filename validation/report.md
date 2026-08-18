@@ -10,7 +10,7 @@ unrooted, and identical against maximally different, alongside random
 trees.
 
 - Julia 1.12.6, TreeDist 2.14.1 | Quartet 1.3.0 | ape 5.8.1 | R 4.4.2
-- Cases compared: 740
+- Cases compared: 1140
 
 | quantity | reference | comparison | mismatches |
 |---|---|---|---:|

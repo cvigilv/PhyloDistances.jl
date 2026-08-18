@@ -12,6 +12,38 @@ $ julia --project=validation validation/crosscheck.jl [ncases]
 It generates tree pairs, computes every quantity on both sides, and renders `report.md`. It
 exits non-zero if any value differs, so it can gate a release.
 
+## The committed fixture is generated from the same references
+
+`../test/fixtures/rf_quartet.tsv` holds the expected values for a small set of named tree
+pairs, and the portable test suite reads it with no R installed. Those values are not
+invented: `fixture.jl` computes each one with TreeDist and Quartet and either verifies the
+committed file against them or rewrites it.
+
+```console
+$ julia --project=validation validation/fixture.jl           # check, non-zero on any difference
+$ julia --project=validation validation/fixture.jl --write    # regenerate
+```
+
+The two scripts divide the work between them. `crosscheck.jl` sweeps hundreds of generated
+pairs and reports; `fixture.jl` pins a handful of hand-chosen ones into a file that travels
+with the tests. Only the numeric columns are generated — the fixture's `provenance` column
+is written by hand and says how each row follows analytically, so a disagreement between
+generator and file means one of them is wrong rather than that a value has merely moved.
+
+## R must be the one the packages were built for
+
+TreeDist and Quartet load compiled code, which R will not accept across a version change:
+a package built for R 4.4 aborts the session when loaded under 4.6. Both scripts take R
+from `PATH` and set `R_HOME` from it, so putting the right R first is enough:
+
+```console
+$ PATH=/path/to/the/right/R/bin:$PATH julia --project=validation validation/fixture.jl
+```
+
+Check with `Rscript -e 'print(.libPaths())'` that the library holding TreeDist is one the
+running R will search — `R_LIBS_USER` is version-specific, and an R that cannot see the
+package reports it as not installed rather than as built for another version.
+
 Integers are compared with `==` and floating-point values with `===` — bitwise, no
 tolerance. `NaN` must meet `NaN`, which happens when neither tree carries a split and the
 normalizer is zero.
