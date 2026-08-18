@@ -27,7 +27,7 @@ const RF_SIZES = (10, 50, 200, 1000)
 # Quartet represents quartet counts in 32-bit integers and refuses trees above 477 tips, so
 # that is where the comparison stops and the Julia-only sizes take over.
 const QUARTET_SIZES = (10, 50, 200, 477)
-const QUARTET_LARGE = (700, 1000)
+const QUARTET_LARGE = (700, 1000, 1500)
 const QUARTET_CEILING = 477
 
 const PAIR_SIZES = Tuple(sort(unique((RF_SIZES..., QUARTET_SIZES..., QUARTET_LARGE...))))
@@ -218,7 +218,7 @@ function report(rf, quartet, rrf, rquartet, rinfo)
     println(io, "\n## Quartet distance, one pair of trees\n")
     println(io, "Quartet refuses trees above ", QUARTET_CEILING, " tips, where the number of ")
     println(io, "four-taxon subsets outgrows the 32-bit integers it counts them in, so the ")
-    println(io, "last two rows have no reference to compare against.\n")
+    println(io, "rows past that size have no reference to compare against.\n")
     println(io, "| taxa | quartets | PhyloDistances | Quartet | ratio | Julia alloc | agree |")
     println(io, "|-----:|---------:|---------------:|--------:|------:|------------:|:------|")
     for row in quartet
@@ -237,10 +237,12 @@ function report(rf, quartet, rrf, rquartet, rinfo)
             row.megabytes, agree)
     end
 
-    println(io, "\nThe quartet distance here is exact enumeration of every four-taxon ")
-    println(io, "subset, which is `O(n⁴)`; Quartet wraps tqDist, which counts the same ")
-    println(io, "quantity without enumerating it. The gap is the algorithm, not the ")
-    println(io, "language, and it widens with every taxon added.")
+    println(io, "\n`QuartetDistance`'s default `:fast` algorithm counts concordant quartets ")
+    println(io, "in `O(n³)` without enumerating them (`algorithm = :naive` keeps the exact ")
+    println(io, "`O(n⁴)` enumeration as a correctness oracle). Quartet wraps tqDist, which ")
+    println(io, "counts the same quantity in `O(n log n)` without enumerating it either — ")
+    println(io, "so the remaining gap past 477 taxa is an algorithm gap, not a language one, ")
+    println(io, "and it would still widen without bound past where this benchmark stops.")
 
     write(joinpath(HERE, "results.md"), String(take!(io)))
     return nothing
