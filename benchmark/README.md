@@ -15,8 +15,8 @@ $ julia --project=benchmark benchmark/run.jl
 `treedist.R` and `quartet.R` on the same files, and renders `results.md`. R is optional —
 without a working `Rscript` the Julia timings are reported alone.
 
-**A full run takes several minutes**, nearly all of it the quartet distance at 700 and 1000
-taxa, where a single call is a minute or two.
+**A full run takes well under a minute** on the Julia side; most of the wall clock goes to R,
+repeating its calls until the clock's resolution stops mattering.
 
 Neither side's timing includes parsing. `benchmark/trees/` and the `results_*_r.tsv` files
 are regenerated on every run and are not tracked; `results.md` is.
@@ -88,35 +88,30 @@ running independent pairs in parallel, is the outstanding work. It changes no re
 
 | taxa | quartets | PhyloDistances | Quartet | ratio |
 |-----:|---------:|---------------:|--------:|------:|
-| 10 | 210 | 9.7 µs | 1.71 ms | 176.4× faster |
-| 50 | 230,300 | 821.2 µs | 12.21 ms | 14.9× faster |
-| 200 | 64,684,950 | 222.34 ms | 183.46 ms | 1.2× slower |
-| 477 | 2,130,031,575 | 7.68 s | 935.14 ms | 8.2× slower |
-| 700 | 9,918,641,075 | 37.40 s | — | — |
-| 1000 | 41,417,124,750 | 183.30 s | — | — |
+| 10 | 210 | 17.6 µs | 1.40 ms | 79.7× faster |
+| 50 | 230,300 | 427.2 µs | 11.25 ms | 26.3× faster |
+| 200 | 64,684,950 | 17.24 ms | 160.91 ms | 9.3× faster |
+| 477 | 2,130,031,575 | 218.29 ms | 899.19 ms | 4.1× faster |
+| 700 | 9,918,641,075 | 681.28 ms | — | — |
+| 1000 | 41,417,124,750 | 1.96 s | — | — |
+| 1500 | 210,094,780,875 | 7.33 s | — | — |
 
-The crossover sits near 200 taxa: below it R's per-call overhead dominates and this package
-wins comfortably, above it the algorithms decide and the gap widens without bound.
-
-This one is slower than its reference at the sizes that matter, by a margin that grows with
-every taxon, and that is expected rather than a defect to be explained away. The
-implementation here enumerates all
-`binomial(n, 4)` four-taxon subsets and resolves each in constant time from a table of
-leaf-to-leaf path lengths — `O(n⁴)`, chosen because it is obviously correct and serves as
-the oracle for anything faster. Quartet wraps
-[tqDist](https://users-cs.au.dk/cstorm/software/tqdist/), which counts the same quantity
-without enumerating it.
-
-So the two columns compare algorithms, not languages, and the gap is the standing argument
-for implementing a subquadratic counting scheme. The benchmark exists to say how much that
-would be worth.
+`QuartetDistance` defaults to `algorithm = :fast`, an `O(n³)` scheme that counts concordant
+quartets by reducing each to a rooted triple under every possible outgroup, rather than
+enumerating all `binomial(n, 4)` subsets directly (`algorithm = :naive`, still `O(n⁴)`,
+remains available as the correctness oracle the fast path is tested against). Quartet wraps
+[tqDist](https://users-cs.au.dk/cstorm/software/tqdist/), which counts the same quantity in
+`O(n log n)` without enumerating it either — the faster of two subquadratic algorithms, not
+a subquadratic one against a quartic one, and the remaining gap past 477 taxa reflects that
+rather than a defect here. Where the two overlap, `:fast` now wins outright rather than only
+below R's per-call-overhead crossover, as the `O(n⁴)` enumeration used to.
 
 **Quartet stops at 477 tips.** Above that the quartet count outgrows the signed 32-bit
 integers it is accumulated in, and the package refuses with "trees too large for integer
 representation". It is worth knowing that the ceiling bites slightly *below* the refusal:
 at 477 tips the reported `N` column is already `2 * Q` overflowed to `NA`, while `Q` itself
-still fits. Read `Q`, `s`, `d`, `r1`, `r2`, `u`; never `N`. The last rows of the table have
-no reference column because of this limit, not because the comparison was skipped.
+still fits. Read `Q`, `s`, `d`, `r1`, `r2`, `u`; never `N`. The rows past that limit have
+no reference column because of it, not because the comparison was skipped.
 
 `run.jl` checks that both implementations returned the same distance for every pair it
 timed, and the table says so per row — a benchmark that quietly measured two different
