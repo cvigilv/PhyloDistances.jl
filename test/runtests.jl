@@ -8,4 +8,5 @@ using Test
     include("test_interface.jl")
     include("test_robinsonfoulds.jl")
     include("test_quartet.jl")
+    include("test_fixtures.jl")
 end
