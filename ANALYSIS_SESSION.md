@@ -6,153 +6,94 @@
 
 ## What was just completed
 
-CHUNK-008: validate-rf-and-quartet — the "usable today" checkpoint, which closes the
-critical path. Robinson-Foulds and quartet distance are now callable and validated.
+CHUNK-018: quartet-distance-fast. `QuartetDistance` now defaults to an `O(n³)` algorithm
+that counts concordant quartets without enumerating them, replacing the `O(n⁴)` direct
+enumeration as the default (that enumeration is still available via `algorithm = :naive`,
+and remains the correctness oracle the fast path is tested against).
 
-`test/fixtures/rf_quartet.tsv` is a tab-separated table of nine named tree pairs with the
-expected `RobinsonFoulds` and `QuartetDistance` value of each, raw and normalized, plus a
-per-row provenance note. Its numeric columns are **generated from TreeDist 2.14.1 and
-Quartet 1.3.0** by the new `validation/fixture.jl`, which also re-checks the committed file
-against them and exits non-zero on any difference. `test/fixtures/read.jl` holds the one
-reader both sides use; `test/test_fixtures.jl` checks every value and then the all-pairs API
-over a five-tree collection.
+At n=1500 (a size the user specifically wanted usable), a single pairwise call dropped from
+an extrapolated ~15 minutes to ~7–8 seconds — checked on both a random binary tree and a
+100-taxon caterpillar (the shape most likely to expose an unbalanced-tree bug).
 
 ## Key decisions made
 
-- **The reference fixes the values; the hand derivation says why they are the right ones.**
-  Every row was derived analytically or by enumerating its quartets before anything was run,
-  and the file is then generated from TreeDist and Quartet. The two agreed bitwise on all
-  nine rows. Either alone would be weaker: values read off the implementation would preserve
-  a bug happily, and values taken from the reference alone would not catch reading the
-  reference wrongly — which counts `QuartetStatus` reports to combine is itself a choice.
-- **Only the numeric columns are generated.** `provenance` is written by hand and carried
-  through regeneration unchanged, so `--write` can never quietly rewrite the justification
-  along with the number.
-- **Plain TSV, parsed by `split(line, '\t')`**, rather than a serialization format. It adds
-  no dependency, diffs cleanly, and is readable in the file. Lines starting with `#` are
-  comments and the first other line names the columns, which the parser asserts.
-- **Everything is compared bitwise, in the tests as in `validation/`.** Both sides reach
-  these values by the same IEEE operations, so a tolerance would hide a real difference
-  rather than absorb a meaningless one. `NaN` agrees only with `NaN`.
-- **`NaN` is a fixture value, not a special case.** The two-stars row has no split in either
-  tree, so its RF normalizer is zero; the parser reads `NaN` and the comparison helper
-  routes it to `isnan`.
-
-## The nine cases
-
-| case | covers |
-| --- | --- |
-| `identical-binary` | a tree against itself |
-| `four-taxa-one-quartet` | the smallest pair that can differ |
-| `one-nni-apart` | a single nearest-neighbor interchange |
-| `star-vs-resolved` | maximal quartet distance, `C(n,4)` |
-| `rooted-vs-unrooted-twin` | the rooted-input warning path |
-| `polytomy-vs-resolved` | a polytomy against a resolved tree |
-| `no-shared-splits` | two caterpillars with nothing in common |
-| `zero-length-branches` | lengths ignored by both metrics |
-| `both-stars` | a zero RF normalizer, giving `NaN` |
-
-## Hand-deriving a quartet count
-
-Worth reusing, since it is what let the fixture be independent. On an unrooted
-**caterpillar**, number each taxon by the internal node it hangs from along the path; a
-quartet's topology then pairs the two lowest-numbered taxa against the two highest. So
-`(A,B,(((C,D),E),F));` numbers A→1, B→1, F→2, E→3, C→4, D→4, and the quartet `{B,D,E,F}` is
-read straight off as `BF|ED`. All fifteen quartets of a six-taxon pair take a couple of
-minutes this way, against arithmetic on three path-length sums per quartet.
-
-Where a tree has a polytomy the caterpillar trick does not apply and the split-set rule
-does: a tree resolves a quartet exactly when one of its splits cuts it two against two.
+- **O(n³), not tqDist's O(n log n).** Asked the user directly: tqDist's algorithm needs a
+  dynamic Hierarchical Decomposition Tree ported from a research paper, high implementation
+  risk with a failure mode (silent wrong answers on large unbalanced trees) that an n≤12
+  brute-force cross-check would not reliably catch. The user chose the lower-risk O(n³)
+  trade explicitly. If ~7 s per pair is later found inadequate, tqDist is the documented
+  next step (Open Questions).
+- **The fast path requires at least one input tree to be binary.** For two polytomous
+  trees, exactness would need a materially harder computation (see Working knowledge in the
+  plan). Rather than implement that or silently give a wrong answer, `:fast` warns and falls
+  back to `:naive` — a real performance cliff for that case, but a visible one, consistent
+  with the project's fail-fast stance. Confirmed both directions work: the fast path handles
+  one polytomous tree exactly (no fallback needed, since an unresolved quartet there can
+  never be concordant against a binary tree), and both-polytomous correctly triggers the
+  warning and matches `:naive`.
+- **`algorithm` is a field, not a call keyword**, per the project's settled design decision;
+  `QuartetDistance(; algorithm = :fast)` (default) or `:naive`, validated at construction.
 
 ## State of the codebase
 
-- Files created: `test/fixtures/rf_quartet.tsv`, `test/fixtures/read.jl`,
-  `test/fixtures/README.md`, `test/test_fixtures.jl`, `validation/fixture.jl`
-- Files modified: `test/runtests.jl`, `validation/README.md`, `validation/report.md`
-- Files deleted: `test/fixtures/.gitkeep` (the directory now has real content)
+- Files modified: `src/quartet.jl` (the fast algorithm, `_naivequartetdistance` split out of
+  the old `_compare` body, the `algorithm` field), `src/clustertable.jl` (`_rootedorder`
+  gained an optional `target` taxon-position parameter, default `1`, so it can root a
+  `FlatTree` at any leaf — Robinson-Foulds' call site is unchanged), `test/test_quartet.jl`
+  (algorithm-selection and fast-vs-naive tests).
 - Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — **1274 tests**, up from 963, with no R and no network
-- R crosscheck passes: yes — `validation/crosscheck.jl` over **1140 cases, zero mismatches**,
-  and `validation/fixture.jl` confirms all nine fixture rows
-- Entry points: `RobinsonFoulds()(t1, t2)`, `QuartetDistance()(t1, t2)`,
-  `pairwise(metric, trees)`
-- Known issues: none
+- Test suite passes: yes — **1319 tests**, up from 1274, no R and no network
+- Entry points: `QuartetDistance()(t1, t2)` (fast by default),
+  `QuartetDistance(; algorithm = :naive)(t1, t2)` (the O(n⁴) oracle)
+- Known issues: none in what's implemented; the two-polytomy case is a documented
+  performance gap, not a bug (see Open Questions in the plan)
 
-## Usable right now
+## Algorithm, briefly
 
-```julia
-using PhyloDistances
-t1 = readnw("(((Human,Chimp),Gorilla),Orang,Gibbon);")
-t2 = readnw("(((Human,Gorilla),Chimp),Gibbon,Orang);")
+An unrooted quartet's topology is a rooted triple under any one of its four members as
+outgroup, and every quartet is discovered exactly four times this way (once per member).
+Summing rooted-triple agreement between the two trees over all `n` choices of root and
+dividing by four gives the quartet agreement count — turning
+"enumerate `binomial(n,4)` quartets" into "for each of `n` roots, count agreement over
+`binomial(n-1,3)` triples without enumerating those either." For a fixed root, leaf pairs
+are grouped by their most-recent-common-ancestor in tree 1 (discovered for free while
+walking tree 1's structure), and for each group a T2-position-indexed membership array
+(built once per branch point, `O(n)`) turns "how many of this T1 clade's leaves lie in a
+given T2 clade" into an `O(1)` prefix-sum lookup — giving `O(n²)` per root, `O(n³)` overall.
+Full derivation and the two-position-numbering trap that cost an hour of debugging are in
+the plan's Working knowledge, dated 2026-08-19 under CHUNK-018.
 
-RobinsonFoulds()(t1, t2)                      # split-symmetric-difference distance
-QuartetDistance()(t1, t2)                     # four-taxon subsets resolved differently
-QuartetDistance(; normalize = true)(t1, t2)   # as a fraction of all C(n,4) quartets
-pairwise(QuartetDistance(), [t1, t2, ...])    # all-pairs matrix
-```
+## Verification beyond the plan's bar
 
-## Watch out for
-
-- **The R references need the Nix R 4.4.2, not the R on `PATH`.** `/usr/local/bin/R` is a
-  CRAN R 4.6 whose library has neither TreeDist nor Quartet. Both are installed for R 4.4
-  and load only under the Nix build, so prefix every validation command:
-
-  ```console
-  $ PATH=/nix/store/jaqvbj23b52yl0qgcrrb4ysbxdlqlbv5-R-4.4.2-wrapper/bin:$PATH \
-      julia --project=validation validation/crosscheck.jl
-  ```
-
-  Two ways this misleads. An R that cannot see a package reports it as **not installed**
-  rather than as installed elsewhere, so `packageVersion` failing proves nothing about the
-  machine — check `.libPaths()` and `R_LIBS_USER`, which is version-specific. And loading a
-  package built for a different R **aborts the session** ("An irrecoverable exception
-  occurred") instead of raising a catchable error.
-- **`readnw` does not accept a `SubString`.** `split(line, '\t')` yields `SubString{String}`
-  and `readnw` fails on one with a misleading "no trailing semicolon?" message wrapping a
-  `MethodError`. `test/fixtures/read.jl` converts with `String(...)`; any other code reading
-  Newick out of a parsed file must do the same.
-- **The test suite prints ~400 uncaptured rooting warnings** from randomized cases in
-  `test/test_robinsonfoulds.jl`. Correct behavior, unreadable output, and a genuine warning
-  would be lost in it. Recorded in Open Questions for CHUNK-023.
-- **`splits` excludes trivial splits by default**; pass `trivial = true` to sum over all
-  branches.
-- **A node with one branch below it inflates path lengths across it** — a rooted tree's root
-  is one. Harmless for quartets, but it silently inflated every RF distance involving a
-  rooted input in CHUNK-006. Treat each new traversal on its own terms.
-- **Randomized checks must include rooted and polytomous trees.** `randomtree` produces
-  neither; 2,000 random unrooted pairs missed the CHUNK-006 root bug that seven hand-picked
-  pairs caught.
-- **Derive normalizers from the reference, never from the literature** — TreeDist normalizes
-  RF by `n1 + n2`, not `2(n-3)`.
-- **`Bool <: Real` in Julia**, so `normalize = true` means the metric's own scheme and
-  `normalize = 1` means divide by one.
-- **Length arithmetic across rootings is inexact**, so branch-length metrics assert with `≈`.
-- **`NewickTree.Node(id, data)` leaves `parent` and `children` undefined**; build with
-  `push!(parent, child)`.
-- **Do not reintroduce a bare `using AbstractTrees` or `using NewickTree`** — both export
-  `children`, `getroot`, `isroot` and `print_tree`.
-- **Julia 1.12 is the declared floor; there is no LTS back-support.**
+- Naive-vs-fast cross-check: 270 random binary-tree pairs (n=4–12), 30 more at n=20/50/100,
+  240 one-polytomy pairs and 240 both-polytomy pairs (n=4–15), a 100-taxon caterpillar pair.
+  All exact matches. The n=1500 and caterpillar timing runs were exploratory (not committed);
+  the committed suite (`test/test_quartet.jl`) keeps a representative slice.
+- An internal `total % 4 == 0` assertion inside `_fastconcordantcount` (every concordant
+  triple must be discovered at exactly 4 of the `n` roots) caught the position-numbering bug
+  described above before it reached the naive-comparison tests — worth keeping as a
+  standing correctness check, not just a debugging aid.
 
 ## Next chunk
 
-CHUNK-009: branch-score-distance — the Kuhner-Felsenstein branch score, the Euclidean
-distance between the two trees' branch-length vectors indexed by split, with an absent split
-contributing length zero.
+Per the agreed sequence (Working stance note, set 2026-08-19): **CHUNK-010
+(split-matching-framework)** next — the vendored optimal-assignment solver and the
+generalized-RF matching engine that CHUNK-011 through CHUNK-015 reduce to. CHUNK-013
+(split-information-primitives) is independent and can be built before or alongside it.
 
-`WeightedRobinsonFoulds` in `src/robinsonfoulds.jl` is the L1 form of exactly this and is
-already written; the branch score is its L2 counterpart, so the chunk is largely a second
-reduction over `_weightedsplits`. Note what that existing code establishes: the sum runs
-over the **union** of the two split sets, `trivial = true` so pendant branches count, and a
-tree without branch lengths is rejected rather than yielding `NaN`.
+## Watch out for
 
-**Neither metric has a reference implementation available.** TreeDist has no
-branch-length-weighted distances at all — they belong to phangorn (`wRF.dist`, `KF.dist`).
-phangorn is **not** installed: checked under the Nix R 4.4.2 against the library that does
-hold TreeDist 2.14.1, Quartet 1.3.0 and TreeTools 2.4.0. Both conventions therefore
-coincide, and validation is by hand: identical lengths give zero, one edge differing by δ
-gives δ, and the metric axioms hold on random triples.
-
-Installing phangorn there would give the branch-length family a reference, and the recipe
-that installed TreeDist and Quartet is known to work — that is CHUNK-032, and doing it
-before CHUNK-009 rather than after would let the branch score be validated the same way
-Robinson-Foulds and the quartet distance now are, through `validation/`.
+- Everything already flagged in prior handoffs still applies (Nix R path, `readnw` and
+  `SubString`, the ~400 uncaptured rooting warnings in `test_robinsonfoulds.jl`, `Bool <:
+  Real`, `NewickTree.Node` construction, no bare `using AbstractTrees`/`using NewickTree`).
+- **This worktree's `ANALYSIS_PLAN.md` was rebased from the shared checkout's *last commit*
+  (085c99d), not its working tree.** The shared checkout had uncommitted edits to the plan
+  (the "Agreed sequence" note, richer CHUNK-018/CHUNK-010 notes) that were never committed;
+  this session read them from the shared checkout directly and folded them into this
+  worktree's copy alongside the CHUNK-018 completion notes, so nothing should be lost — but
+  when merging, diff against the shared checkout's current `ANALYSIS_PLAN.md` rather than
+  assuming a plain fast-forward captures everything.
+- If a future session extends the fast algorithm to handle two polytomous trees, the
+  building block it is missing is a per-node-pair contingency-table count (leaves split
+  across ≥3 children of a branch point in *both* trees simultaneously) — sketched but not
+  derived in detail in the plan's Open Questions.

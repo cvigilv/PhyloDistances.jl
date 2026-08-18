@@ -331,6 +331,37 @@ Produce these live in the MCP Julia session and let them go when it exits.
   taxa against the two highest.** This resolves a quartet by inspection and makes quartet
   counts hand-derivable for the small trees used as fixtures, which is what lets expected
   values be established independently of the implementation.
+- 2026-08-19 (CHUNK-018): **An unrooted quartet's topology is a rooted triple under any one
+  of its four members as outgroup.** Root the tree at leaf `a`; among the other three, the
+  pair with the deeper (more recent) common ancestor is the pair `a` is *not* grouped with.
+  Every quartet is discovered exactly four times this way (once per member as root), so
+  summing rooted-triple agreement between two trees over all `n` choices of root and
+  dividing by four gives the total quartet agreement — the reduction the fast algorithm
+  (`_fastconcordantcount`) is built on. This is what turns "count agreement over
+  `binomial(n,4)` quartets" into "count agreement over `n` roots of `binomial(n-1,3)`
+  triples each," which is where the `O(n) × O(n²) = O(n³)` bound comes from.
+- 2026-08-19 (CHUNK-018): **A polytomy is invisible to this reduction only when the *other*
+  tree is fully resolved.** A quartet unresolved by a polytomous tree can be concordant only
+  if the other tree is *also* unresolved there — impossible for a binary tree, which resolves
+  everything — so whenever at least one input is binary, `distance = binomial(n,4) -
+  concordant` exactly, with no term for both-unresolved quartets. Two polytomous trees can
+  share an unresolved quartet, which this reduction does not account for; `_fastquartetdistance`
+  returns `nothing` in that case and the caller falls back to `:naive`. A fully general
+  fast path would need, for every pair of branch points (one per tree) with degree ≥3, the
+  count of leaf-triples split across three-or-more children of *both* simultaneously — a
+  contingency-table computation over each pair's children, not attempted here.
+- 2026-08-19 (CHUNK-018): **Two independent taxon-position numberings must never be crossed.**
+  The algorithm numbers each tree's remaining `n-1` leaves independently (via
+  `_daynumbers`, rooted at the current outgroup), so a taxon has a *different* position in
+  each tree. Building the T1-indexed-clade-membership array over T2's numbering needs the
+  T2-position → T1-position map (`tau`), not its inverse (`sigma`, T1-position → T2-position,
+  needed separately to look up T2's LCA-interval matrix by T1-position pairs) — using one
+  where the other belongs compiles and runs, and silently undercounts by exactly the leaves
+  whose position happens to permute correctly by chance. Caught by an internal
+  `total % 4 == 0` assertion (every concordant triple is counted at exactly 4 of the `n`
+  roots) failing on a 5-taxon case in testing, not by the n≤12 brute-force sweep alone,
+  which happened to pass first on an unrelated seed — the divisibility check is cheap
+  insurance worth keeping.
 
 ## Chunks
 
@@ -670,7 +701,17 @@ Produce these live in the MCP Julia session and let them go when it exits.
 
 ---
 
-<!-- Expansion. Order below is by dependency, not urgency; resequence as needs dictate. -->
+<!-- Expansion. Numbering below is by dependency, not by the order of work.
+
+     Agreed sequence, set 2026-08-19: **CHUNK-018, then CHUNK-010**, then the rest of the
+     split-matching family (CHUNK-013 alongside, then CHUNK-011, CHUNK-012, CHUNK-014,
+     CHUNK-015). CHUNK-018 finishes the quartet distance while its convention and its
+     reference are fresh; CHUNK-010 is the highest-leverage chunk in the plan, since it
+     reduces five later metrics to scoring functions. Everything else waits on those.
+
+     CHUNK-009 and CHUNK-032 are deferred together: the branch-length metrics have no
+     reference implementation until phangorn is installed, so CHUNK-032 should precede
+     CHUNK-009 whenever that track is taken up. -->
 
 ### CHUNK-009: branch-score-distance
 - **Description**: Kuhner-Felsenstein branch-score distance: the Euclidean distance
@@ -698,9 +739,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
   permutation search over all matchings for cost matrices small enough to enumerate
   exhaustively (≤8×8), including rectangular and tied-cost cases. The framework itself is
   checked for symmetry in its two arguments.
-- **Notes**: Getting this chunk right collapses CHUNK-011 through CHUNK-015 into scoring
-  functions plus tests. Since the solver is vendored, its test set is part of the
-  package's correctness surface — treat it as a first-class component, not a helper.
+- **Notes**: **Scheduled after CHUNK-018 (2026-08-19).** Getting this chunk right collapses
+  CHUNK-011 through CHUNK-015 into scoring functions plus tests. Since the solver is
+  vendored, its test set is part of the package's correctness surface — treat it as a
+  first-class component, not a helper.
+
+  CHUNK-013's information primitives are independent of this chunk and of each other, so
+  they can be built before or alongside it; CHUNK-014 and CHUNK-015 need both.
 
 ### CHUNK-011: nye-similarity-and-jrf
 - **Description**: Nye et al. similarity — each split pair scored by the size of the
@@ -786,17 +831,41 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Description**: Replace CHUNK-007's O(n⁴) enumeration with a subquadratic-in-quartets
   counting scheme, keeping the naive version available (internal, or behind an `algorithm`
   keyword) as the correctness oracle. Document the complexity achieved.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-007
 - **Verification strategy**: The fast implementation agrees exactly with brute-force
   enumeration on random trees up to n=12, and on the CHUNK-008 fixture.
-- **Notes**: Optional — skip if CHUNK-007's performance proves adequate for the tip counts
-  actually in use. **Measured**: the naive enumeration costs 222 ms at 200 taxa, 7.68 s at
-  477 and 183 s at 1000, against tqDist (via the Quartet R package), which counts without
-  enumerating. The crossover is near 200 taxa — below it this package is faster, above it
-  the algorithms decide. `benchmark/results.md` carries the ratio per size.
-  tqDist is the algorithm to read if this is taken up; note it is 32-bit and refuses trees
-  above 477 tips, a limit this package need not inherit.
+- **Notes**: Lives in `src/quartet.jl`. `QuartetDistance` gains an `algorithm` field
+  (`:fast` default, `:naive` the CHUNK-007 enumeration), per the settled design decision
+  that a variant selector is a field, never a call keyword.
+
+  **Chose O(n³), not tqDist's O(n log n).** tqDist's algorithm needs a dynamic Hierarchical
+  Decomposition Tree, which is substantial to port correctly and whose failure mode is
+  silent wrong answers on exactly the large, unbalanced trees a brute-force cross-check
+  against n≤12 would not catch. The user chose the lower-risk O(n³) trade explicitly,
+  weighing correctness confidence over the extra constant factor — see Working knowledge for
+  the reduction it is built from. Measured at n=1500 (a realistic single comparison): **~7–8
+  s** on both a random binary tree and a worst-case caterpillar, against an extrapolated
+  ~15 minutes for the naive `O(n⁴)` enumeration at the same size — roughly **100×**. All-pairs
+  work over many such trees still wants CHUNK-024's preprocessing-hoisting treatment.
+
+  **Requires at least one input tree to be fully resolved (binary).** When both trees carry
+  a polytomy, `:fast` cannot in general distinguish "unresolved in both" quartets without
+  machinery this chunk does not implement (see Working knowledge), so it warns and falls
+  back to `:naive`. This is a real performance cliff for two-polytomy trees at large n —
+  intentional and documented, not silently eaten, matching the project's fail-fast stance.
+
+  Verified beyond the plan's bar: the naive-vs-fast cross-check ran exhaustively-flavored
+  on random binary trees n=4–12 (270 pairs) and n=20/50/100 (30 pairs), on one-polytomy and
+  both-polytomy pairs at n=4–15 (480 pairs total, exercising both the fast path and the
+  warn-and-fallback path), and on a 100-taxon caterpillar pair — the shape most likely to
+  break an implementation that assumes balance. All matched `:naive` exactly. The committed
+  test suite keeps a representative slice of this (`test/test_quartet.jl`); the n=1500 and
+  n=100-caterpillar runs were exploratory and are not committed.
+
+  `_rootedorder` (`src/clustertable.jl`) gained an optional `target` taxon-position
+  parameter (default `1`, so Robinson-Foulds' use of it is unchanged) so it can root a
+  `FlatTree` at any leaf, which the fast algorithm needs for every one of its `n` roots.
 
 ### CHUNK-019: nni-distance-approximation
 - **Description**: Approximate nearest-neighbour-interchange distance following the Li et
@@ -995,6 +1064,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-006 (robinson-foulds) → next: CHUNK-007
 - 2026-08-17 CHUNK-007 (quartet-distance-exact) → next: CHUNK-008
 - 2026-08-19 CHUNK-008 (validate-rf-and-quartet) → next: CHUNK-009
+- 2026-08-19 CHUNK-018 (quartet-distance-fast) → next: CHUNK-010
 
 ## Open Questions
 
@@ -1007,10 +1077,17 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
-- **Quartet distance algorithm.** Whether CHUNK-018's subquadratic version is worth
-  implementing. The naive enumeration costs 0.2 s at 200 taxa and 12.7 ms at 100, so it is
-  comfortable for everyday use; the case for replacing it rests on whether trees of ~500 tips
-  and up are actually compared. Decide from the CHUNK-026 benchmark.
+- ~~**Quartet distance algorithm.**~~ Resolved 2026-08-19: CHUNK-018 implemented the O(n³)
+  version. Two things that came out of it remain genuinely open:
+  - **The two-polytomy case has no fast path.** `:fast` needs at least one input tree
+    binary; two polytomous trees fall back to `:naive`'s `O(n⁴)`, which is a real
+    performance cliff at large n. A fully general fast algorithm would need to count
+    both-unresolved quartets via the node-pair "rainbow triple" contingency-table approach
+    sketched in Working knowledge — substantially more machinery, not attempted here.
+  - **tqDist's O(n log n) remains unimplemented.** If `~7 s` at n=1500 per pair (or the
+    all-pairs cost once CHUNK-024 hoists preprocessing) proves inadequate, that is the next
+    step up; it needs a dynamic Hierarchical Decomposition Tree, ported from Brodal,
+    Fagerberg & Pedersen (2004) rather than derived from scratch.
 - **A conflict-only quartet distance.** Settled that `QuartetDistance` counts a quartet
   resolved by only one tree as a difference, matching the Quartet package. The conflict-only
   reading — Quartet's `d` alone — remains a published alternative and is one line away, since
