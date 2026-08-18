@@ -317,6 +317,20 @@ Produce these live in the MCP Julia session and let them go when it exits.
   on values such as `92/94`. Passing Julia's output through it reported two differences that
   did not exist, and would equally have hidden real ones. Julia's parser round-trips
   correctly, so R writes and Julia compares.
+- 2026-08-19 (CHUNK-008): **The R references live under a Nix R 4.4.2, not the R on `PATH`.**
+  `/usr/local/bin/R` is a CRAN R 4.6 whose library holds neither TreeDist nor Quartet; both
+  are installed for R 4.4 and only load under
+  `/nix/store/jaqvbj23b52yl0qgcrrb4ysbxdlqlbv5-R-4.4.2-wrapper/bin`. Put that on `PATH`
+  ahead of everything else before running anything in `validation/`. Two ways this misleads:
+  an R that cannot see a package reports it as **not installed**, not as installed
+  elsewhere, and loading a package built for another R version **aborts the session** rather
+  than raising a catchable error. Check `.libPaths()` before concluding a reference is
+  missing.
+- 2026-08-19 (CHUNK-008): **On an unrooted caterpillar, number each taxon by the internal
+  node it hangs from along the path; a quartet's topology pairs the two lowest-numbered
+  taxa against the two highest.** This resolves a quartet by inspection and makes quartet
+  counts hand-derivable for the small trees used as fixtures, which is what lets expected
+  values be established independently of the implementation.
 
 ## Chunks
 
@@ -612,7 +626,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
   provenance line. Add the test set that checks both metrics against it, and confirm the
   naive all-pairs API from CHUNK-002 produces a sensible distance matrix over a small tree
   collection.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-006, CHUNK-007
 - **Verification strategy**: The fixture is plain text with no absolute paths, and the
   tests pass on a clean machine with no R installation and no network access. Expected
@@ -622,6 +636,37 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Notes**: **This is the "usable today" checkpoint.** After this chunk, RF and quartet
   distance are validated and callable on real trees. Everything below is expansion, and
   can be reordered freely to suit what is needed next.
+
+  The fixture is `test/fixtures/rf_quartet.tsv`, tab-separated, with `test/fixtures/README.md`
+  documenting the columns and provenance, and `test/test_fixtures.jl` reading it. Nine cases
+  cover identical trees, four taxa, one NNI, a star against a resolved tree, a rooted tree
+  against its unrooted twin, a polytomy against a resolved tree, two caterpillars sharing no
+  split, zero-length branches, and two stars (whose RF normalizer is zero, so the value is
+  `NaN`).
+
+  **Every expected value was derived by hand or analytically before being run**, not read off
+  the implementation, so the fixture is an independent check rather than a regression
+  baseline. The two nontrivial quartet counts — 8 of 15 for the polytomy pair and 13 of 15
+  for the caterpillars — were obtained by enumerating all fifteen quartets and resolving each
+  from the split sets. All nine rows agreed with the implementation on the first run.
+
+  The numeric columns are nonetheless **generated from TreeDist 2.14.1 and Quartet 1.3.0** by
+  `validation/fixture.jl`, which also re-checks the committed file against them and exits
+  non-zero on any difference. All nine hand-derived rows matched the reference bitwise, so
+  the file is both reference-sourced and independently corroborated, and the test compares
+  bitwise rather than with a tolerance. `test/fixtures/read.jl` holds the one reader both
+  the test suite and the generator use.
+
+  A useful counting trick for hand-derivation, worth reusing: on an unrooted **caterpillar**,
+  number each taxon by the internal node it hangs from along the path; a quartet's topology
+  then pairs the two lowest-numbered taxa against the two highest. It settles a quartet by
+  inspection where the four-point condition needs arithmetic.
+
+  The all-pairs check runs both metrics over five six-taxon trees and asserts the matrix is
+  square, symmetric, zero on the diagonal, equal elementwise to the direct calls, and — for
+  the star row — equal to each tree's split count under RF and to the quartets it resolves
+  under the quartet distance. Robinson-Foulds is additionally checked against the triangle
+  inequality over every triple, which it satisfies as a symmetric difference of sets.
 
 ---
 
@@ -949,6 +994,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-005 (random-tree-generation) → next: CHUNK-006
 - 2026-08-17 CHUNK-006 (robinson-foulds) → next: CHUNK-007
 - 2026-08-17 CHUNK-007 (quartet-distance-exact) → next: CHUNK-008
+- 2026-08-19 CHUNK-008 (validate-rf-and-quartet) → next: CHUNK-009
 
 ## Open Questions
 
@@ -992,3 +1038,8 @@ Produce these live in the MCP Julia session and let them go when it exits.
   clustering — will not accept them as things stand. Decide per metric whether to subtype
   `Distances.Metric` directly once each is implemented and its properties are established
   (CHUNK-021 tests the axioms). Changing this after release is breaking.
+- **Warning noise in the test suite.** A full run prints roughly 400 uncaptured
+  "defined on unrooted trees but the ... tree is rooted" warnings, from randomized cases in
+  `test/test_robinsonfoulds.jl` that exercise rooted inputs without wrapping the call in
+  `@test_logs`. The warnings are correct and the tests pass; the output is merely hard to
+  read, and a real warning would be lost in it. Fold into CHUNK-023's edge-case audit.
