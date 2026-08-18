@@ -185,16 +185,16 @@ function _matchedpositions(f1::FlatTree{L}, f2::FlatTree{L}) where {L}
 end
 
 """
-Walk the tree depth-first from the leaf carrying taxon position 1, returning the nodes in
-discovery order along with each node's parent under that rooting.
+Walk the tree depth-first from the leaf carrying taxon position `target` (default `1`),
+returning the nodes in discovery order along with each node's parent under that rooting.
 """
-function _rootedorder(flat::FlatTree, taxonpos::Vector{Int32})
+function _rootedorder(flat::FlatTree, taxonpos::Vector{Int32}, target::Int32 = Int32(1))
     nnodes = Int32(length(flat.parent))
 
     start = Int32(0)
     for i in Int32(1):nnodes
         k = flat.leafat[i]
-        if k != 0 && taxonpos[k] == 1
+        if k != 0 && taxonpos[k] == target
             start = i
             break
         end
