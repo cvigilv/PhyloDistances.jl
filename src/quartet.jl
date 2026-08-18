@@ -1,5 +1,5 @@
 """
-    QuartetDistance(; convention = :treedist, normalize = false)
+    QuartetDistance(; convention = :treedist, normalize = false, algorithm = :fast)
 
 The quartet distance: the number of four-taxon subsets the two trees resolve differently.
 
@@ -20,12 +20,18 @@ Both conventions compute the same value. TreeDist has no quartet distance — it
 the companion R package [Quartet](https://github.com/ms609/Quartet) — so there is no
 reference formulation to diverge from.
 
-# Complexity
+# Algorithm
+
+`algorithm = :fast` (the default) counts concordant quartets without enumerating them; see
+[`_fastconcordantcount`](@ref) for the method and its complexity. It requires that at least
+one of the two trees be fully resolved (binary); if both carry a polytomy, it falls back to
+`:naive` and warns, since exactness cannot be guaranteed without the general (and
+unimplemented) two-polytomy case. `algorithm = :naive` always uses the direct `O(n⁴)`
+enumeration below, which remains the correctness oracle the fast path is tested against.
 
 `O(n²)` to tabulate the leaf-to-leaf path lengths of each tree, then `O(n⁴)` to enumerate
 the `binomial(n, 4)` quartets, each resolved in constant time. The quartet count grows
-steeply: 210 subsets at 10 taxa, 64 million at 200, 41 billion at 1000. This is the exact
-distance by direct enumeration, and it is the right choice only at modest taxon counts.
+steeply: 210 subsets at 10 taxa, 64 million at 200, 41 billion at 1000.
 
 Estabrook, G.F., McMorris, F.R. and Meacham, C.A. (1985). *Comparison of undirected
 phylogenetic trees based on subtrees of four evolutionary units.* Systematic Zoology
@@ -34,13 +40,37 @@ phylogenetic trees based on subtrees of four evolutionary units.* Systematic Zoo
 struct QuartetDistance{C<:Convention,N} <: TreeMetric
     convention::C
     normalize::N
+    algorithm::Symbol
+
+    function QuartetDistance{C,N}(convention, normalize, algorithm) where {C,N}
+        algorithm in (:fast, :naive) || throw(ArgumentError(
+            "unknown algorithm $(repr(algorithm)); expected :fast or :naive"
+        ))
+        return new{C,N}(convention, normalize, algorithm)
+    end
 end
 
-QuartetDistance(; convention = TreeDistConvention(), normalize = false) =
-    QuartetDistance(Convention(convention), normalize)
+QuartetDistance(convention::C, normalize::N, algorithm::Symbol = :fast) where {C,N} =
+    QuartetDistance{C,N}(convention, normalize, algorithm)
 
-function _compare(::QuartetDistance, ::Convention, t1, t2)
+QuartetDistance(; convention = TreeDistConvention(), normalize = false, algorithm = :fast) =
+    QuartetDistance(Convention(convention), normalize, algorithm)
+
+function _compare(m::QuartetDistance, ::Convention, t1, t2)
     index = taxonindex(t1, t2)
+    length(index) < 4 && return 0
+    m.algorithm === :naive && return _naivequartetdistance(t1, t2, index)
+
+    fast = _fastquartetdistance(t1, t2, index)
+    fast === nothing || return fast
+
+    @warn "QuartetDistance's :fast algorithm needs at least one input tree to be fully " *
+          "resolved; both trees have a polytomy, so falling back to the O(n⁴) :naive " *
+          "enumeration, which will be slow on large trees."
+    return _naivequartetdistance(t1, t2, index)
+end
+
+function _naivequartetdistance(t1, t2, index::TaxonIndex)
     n = length(index)
     d1 = _topologicalpaths(t1, index)
     d2 = _topologicalpaths(t2, index)
@@ -56,6 +86,201 @@ function _compare(::QuartetDistance, ::Convention, t1, t2)
         differing += q1 != q2
     end
     return differing
+end
+
+"""
+    _fastquartetdistance(t1, t2, index::TaxonIndex) -> Union{Int,Nothing}
+
+The quartet distance computed without enumerating quartets, or `nothing` if neither tree
+is fully resolved (see [`_fastconcordantcount`](@ref) for why one binary tree is required).
+
+For binary trees every quartet is resolved, so the distance is `binomial(n, 4)` minus the
+number resolved identically by both trees, `_fastconcordantcount`. The same holds whenever
+at least one tree is binary: a quartet unresolved by a polytomous tree can only be
+concordant if the binary tree is *also* unresolved there, which never happens.
+"""
+function _fastquartetdistance(t1, t2, index::TaxonIndex)
+    n = length(index)
+    f1, f2 = flatten(t1), flatten(t2)
+    pos1 = Int32[index[label] for label in f1.labels]
+    pos2 = Int32[index[label] for label in f2.labels]
+
+    _isbinaryflat(f1, pos1) || _isbinaryflat(f2, pos2) || return nothing
+
+    concordant = _fastconcordantcount(f1, f2, pos1, pos2, n)
+    return binomial(n, 4) - concordant
+end
+
+# Whether every internal node has exactly two branches below it, under an arbitrary
+# rooting (branch count below a node does not depend on which taxon the tree is rooted
+# at, so checking one rooting settles it for all of them).
+function _isbinaryflat(flat::FlatTree, positions::Vector{Int32})
+    n = length(flat.labels)
+    n < 3 && return true
+    order, up = _rootedorder(flat, positions, Int32(1))
+    code = _daynumbers(flat, order, positions, n)
+    _, _, _, below = _intervals(flat, order, up, positions, code)
+    return all(b -> b <= 2, below)
+end
+
+"""
+    _fastconcordantcount(f1, f2, pos1, pos2, n) -> Int
+
+The number of four-taxon subsets `t1` and `t2` resolve identically, computed in `O(n³)`.
+
+# Method
+
+A quartet `{a,b,c,d}` resolved as `ab|cd` is, from `a`'s point of view, a *rooted triple*:
+rooting the tree at `a` makes `b` and `c,d`'s most recent common ancestor a strict
+descendant of `a,b,c,d`'s overall ancestor, i.e. `b` and one of `{c,d}` are not the closest
+pair — concretely, `{b,c,d}` resolves as `(cd)b`. Every unrooted quartet is a rooted triple
+under each of its four members in turn, so summing rooted-triple agreement between `t1` and
+`t2` over all `n` choices of root and dividing by four gives the quartet agreement count.
+
+Fix a root `w` and the remaining `n - 1` leaves. A pair `x, y` has a most recent common
+ancestor `v` in the tree rooted at `w`; write `clade(v)` for the leaves below `v`. The
+triple `{x, y, z}` resolves as `(xy)z` for every `z` outside `clade(v)`, and this is the
+*only* way `{x, y}` can be the close pair — so summing, over every unordered pair `x, y`,
+the count of `z` for which `x, y` are the close pair in *both* trees gives the number of
+concordant triples rooted at `w`, and each such `z` lies outside `clade₁(v₁) ∪ clade₂(v₂)`
+for `v₁ = mrca₁(x,y)`, `v₂ = mrca₂(x,y)`.
+
+Rooting `t1` at `w` and numbering the other `n - 1` leaves by that walk's discovery order
+makes every clade a contiguous run of numbers (as in [`clustertable`](@ref)); the same is
+done for `t2`, under an independent numbering. For each branch point `v₁` of `t1`, a dense
+array over `t2`'s numbering records which leaves lie in `clade₁(v₁)`, and its prefix sum
+turns "how many of `clade₁(v₁)`'s leaves lie in `clade₂(v₂)`" into one O(1) lookup — used
+once per pair `x, y` whose most recent common ancestor in `t1` is `v₁`, of which there are
+`O(n)` in total. Building the array costs `O(n)` and is paid once per branch point, so one
+root costs `O(n²)`; summing over the `n` roots gives the `O(n³)` bound.
+"""
+function _fastconcordantcount(
+    f1::FlatTree, f2::FlatTree, pos1::Vector{Int32}, pos2::Vector{Int32}, n::Int
+)
+    lca2lo = Matrix{Int32}(undef, n, n)
+    lca2hi = Matrix{Int32}(undef, n, n)
+    sigma = Vector{Int32}(undef, n)         # sigma[t1 position] == t2 position, same taxon
+    tau = Vector{Int32}(undef, n)           # tau[t2 position] == t1 position, same taxon
+    prefix = Vector{Int32}(undef, n + 1)
+    ranges = Tuple{Int32,Int32}[]
+
+    total = 0
+    for w in Int32(1):Int32(n)
+        order1, up1 = _rootedorder(f1, pos1, w)
+        code1 = _daynumbers(f1, order1, pos1, n)
+        lo1, hi1, _, _ = _intervals(f1, order1, up1, pos1, code1)
+
+        order2, up2 = _rootedorder(f2, pos2, w)
+        code2 = _daynumbers(f2, order2, pos2, n)
+        lo2, hi2, _, _ = _intervals(f2, order2, up2, pos2, code2)
+        _fillcrosspairs!(lca2lo, lca2hi, f2, order2, up2, lo2, hi2)
+
+        for taxon in 1:n
+            sigma[code1[taxon]] = code2[taxon]
+            tau[code2[taxon]] = code1[taxon]
+        end
+
+        total += _crosspaircontribution!(
+            prefix, ranges, f1, order1, up1, lo1, hi1, sigma, tau, lca2lo, lca2hi, n
+        )
+    end
+
+    quotient, remainder = divrem(total, 4)
+    remainder == 0 || throw(ErrorException(
+        "PhyloDistances internal error: concordant-quartet accumulator " *
+        "$total is not divisible by 4"
+    ))
+    return quotient
+end
+
+# Fills lca_lo[x, y], lca_hi[x, y] with the interval spanned by the most recent common
+# ancestor of the leaves numbered x and y, for every pair under this rooting. A node's
+# downward neighbours (its children, plus its `FlatTree` parent if that direction has
+# become "down" under this rooting) partition the leaves below it into contiguous, disjoint
+# runs; every pair drawn from two different runs has its most recent common ancestor here,
+# and every pair has its most recent common ancestor at exactly one node, so this reaches
+# each of the O(n²) pairs once.
+function _fillcrosspairs!(
+    lca_lo::Matrix{Int32}, lca_hi::Matrix{Int32}, flat::FlatTree,
+    order::Vector{Int32}, up::Vector{Int32}, lo::Vector{Int32}, hi::Vector{Int32}
+)
+    ranges = Tuple{Int32,Int32}[]
+    for node in order
+        kids, parent = _neighbours(flat, node)
+        from = up[node]
+        empty!(ranges)
+        for kid in kids
+            kid == from || push!(ranges, (lo[kid], hi[kid]))
+        end
+        parent != 0 && parent != from && push!(ranges, (lo[parent], hi[parent]))
+
+        k = length(ranges)
+        k < 2 && continue
+        L, H = lo[node], hi[node]
+        for i in 1:(k - 1), j in (i + 1):k
+            loi, hii = ranges[i]
+            loj, hij = ranges[j]
+            for x in loi:hii, y in loj:hij
+                lca_lo[x, y] = L
+                lca_hi[x, y] = H
+                lca_lo[y, x] = L
+                lca_hi[y, x] = H
+            end
+        end
+    end
+    return nothing
+end
+
+# For the tree rooted at `w`, adds up (n - 1 - |clade1(mrca1(x,y)) ∪ clade2(mrca2(x,y))|)
+# over every pair x, y of the other n - 1 leaves, grouped by their most recent common
+# ancestor in `f1` (found the same way `_fillcrosspairs!` finds it in `f2`) so that the
+# `t2`-indexed membership array for `clade1` is built once per branch point rather than
+# once per pair.
+function _crosspaircontribution!(
+    prefix::Vector{Int32}, ranges::Vector{Tuple{Int32,Int32}}, f1::FlatTree,
+    order1::Vector{Int32}, up1::Vector{Int32}, lo1::Vector{Int32}, hi1::Vector{Int32},
+    sigma::Vector{Int32}, tau::Vector{Int32}, lca2lo::Matrix{Int32}, lca2hi::Matrix{Int32},
+    n::Int
+)
+    contribution = 0
+    for node in order1
+        kids, parent = _neighbours(f1, node)
+        from = up1[node]
+        empty!(ranges)
+        for kid in kids
+            kid == from || push!(ranges, (lo1[kid], hi1[kid]))
+        end
+        parent != 0 && parent != from && push!(ranges, (lo1[parent], hi1[parent]))
+
+        k = length(ranges)
+        k < 2 && continue
+
+        L1, H1 = lo1[node], hi1[node]
+        clade1size = H1 - L1 + 1
+
+        # prefix[p + 1] counts, among the first p leaves of *t2*'s numbering, how many
+        # also lie in clade1(node) — found via `tau`, which reads their t1 position.
+        acc = Int32(0)
+        prefix[1] = Int32(0)
+        for p in 1:n
+            acc += (L1 <= tau[p] <= H1) ? Int32(1) : Int32(0)
+            prefix[p + 1] = acc
+        end
+
+        for i in 1:(k - 1), j in (i + 1):k
+            loi, hii = ranges[i]
+            loj, hij = ranges[j]
+            for x in loi:hii, y in loj:hij
+                x2, y2 = sigma[x], sigma[y]
+                l2lo, l2hi = lca2lo[x2, y2], lca2hi[x2, y2]
+                clade2size = l2hi - l2lo + 1
+                intersection = prefix[l2hi + 1] - prefix[l2lo]
+                unionsize = clade1size + clade2size - intersection
+                contribution += n - 1 - unionsize
+            end
+        end
+    end
+    return contribution
 end
 
 # Both trees span the same taxa, so each defines the same set of quartets; `max` and `min`
