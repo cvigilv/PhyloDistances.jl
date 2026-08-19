@@ -87,3 +87,39 @@ end
         @test total ≈ _bruteforceassignment(cost)
     end
 end
+
+@testset "agreement with brute-force search on negative costs" begin
+    # This package always calls _hungarian on negated similarities (splitmatching's
+    # maximize = true path), so every real call passes costs in roughly [-1, 0] — a range
+    # none of the positive-cost sweeps above exercise. Duality only requires the starting
+    # potentials to be feasible, not the costs to be nonnegative, so this is expected to
+    # hold; it is worth checking directly rather than trusting that inference alone.
+    rng = Xoshiro(20260820)
+    for _ in 1:1000
+        nr, nc = rand(rng, 1:7), rand(rng, 1:7)
+        cost = -Float64.(rand(rng, 0:5, nr, nc)) ./ 5
+        _, _, total = _hungarian(cost)
+        @test total ≈ _bruteforceassignment(cost)
+    end
+end
+
+@testset "row reduction alone, not row-and-column reduction" begin
+    # A regression case for a real bug: seeding both u and v from row-then-column minima
+    # (the standard preprocessing for the *square* assignment problem) is unsound once
+    # n < m, because reducing every column by its minimum across *all* rows can tie
+    # several columns at reduced cost zero for a row purely from what other, unrelated
+    # rows prefer -- not because those columns are equally good choices once only the n
+    # matched columns are counted. The tie-break (first zero found wins) then locked in
+    # column 3 for row 3 here, leaving the true optimum (column 5) unreachable: reported
+    # total 5 against the brute-force optimum 3. Row reduction alone (u only, v left at
+    # zero) does not have this failure mode, since it never touches v.
+    cost = [
+        1.0 1.0 5.0 3.0 2.0 4.0
+        3.0 1.0 5.0 4.0 3.0 2.0
+        5.0 2.0 3.0 2.0 1.0 5.0
+    ]
+    rowmatch, _, total = _hungarian(cost)
+    @test total == 3.0
+    @test rowmatch == [1, 2, 5]
+    @test total ≈ _bruteforceassignment(cost)
+end
