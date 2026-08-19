@@ -122,39 +122,43 @@ computations would be worthless.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 11.0 µs | 56.5 µs | 5.1× faster |
-| 50 | 110.5 µs | 82.0 µs | 1.3× slower |
-| 200 | 1.29 ms | 465.2 µs | 2.8× slower |
-| 1000 | 56.1 ms | 17.7 ms | 3.2× slower |
+| 10 | 12.0 µs | 64.1 µs | 5.4× faster |
+| 50 | 115.7 µs | 92.0 µs | 1.3× slower |
+| 200 | 1.37 ms | 518.8 µs | 2.6× slower |
+| 1000 | 55.1 ms | 19.6 ms | 2.8× slower |
 
 An earlier version of this benchmark showed a much worse picture — up to 7× slower at
-n=1000, widening rather than narrowing with tree size. Two fixes closed most of that gap.
+n=1000, widening rather than narrowing with tree size. Two rounds of work closed most of
+that gap, but not by the same route each time, and the second round is worth being honest
+about: it changed *what* the solver is, not really *how fast* it is.
 
-**The score matrix was allocating a `BitVector` per cell.** `JaccardRobinsonFoulds` scores
-every pair of the two trees' splits, an `O(n²)` matrix in the split count; building it
-called `count(a .& b)` per cell, and broadcasting `.&` allocates a fresh `BitVector` to hold
-the result before `count` ever runs. Replacing that with a direct population count over the
-two masks' machine-word chunks (`_countand` in `src/generalizedrf.jl`) removed the
-allocation entirely, and hoisting each split's own marked-taxon count out of the `O(n²)`
-loop — it depends on the row or column alone, never on the pair — removed the redundant
-`O(n)` work that came with recomputing it per cell. Together with reusing the assignment
-solver's scratch buffers across rows instead of reallocating them (`src/assignment.jl`),
-this cut allocation at n=1000 from **245 MB to 10 MB**.
+**Round one fixed real waste.** The score matrix allocated a `BitVector` per cell
+(`count(a .& b)` — broadcasting `.&` builds a fresh array before `count` ever runs, once
+per pair of splits, `O(n²)` times); replacing it with a direct population count over the
+two masks' machine-word chunks (`_countand`) removed the allocation, and hoisting each
+split's own marked-taxon count out of the loop removed redundant `O(n)` work that came
+with recomputing it per cell. The assignment solver reused its scratch buffers across rows
+instead of reallocating them every row. Together these cut allocation at n=1000 from
+**245 MB to 10 MB** and roughly halved wall time, for changes that are unambiguous wins —
+none of them trade anything away.
 
-**The assignment solver itself was doing far more search than necessary.** Its potentials
-started at zero, so the first attempt at a match for any row began from no information at
-all. Seeding the row potentials from each row's own minimum cost, and processing rows in
-ascending order of that minimum — both valid regardless of starting point or order, since
-neither changes which matching is optimal, only how much work finding it takes — cut the
-number of augmenting-path steps taken on a ~1000-split matching by roughly half. (Column
-reduction, the natural next step for the *square* assignment problem, turned out to be
-unsound here once rows and columns are unequal in count — see the comment above the row
-reduction in `src/assignment.jl` for the case that caught it.)
-
-What is left is close to the assignment solver's inherent cost on this problem: TreeDist's
-C++ solver is genuinely faster per comparison it makes, and closing the remaining gap
-further would mean porting more of Jonker & Volgenant's (1987) preprocessing — the
-"augmenting row reduction" step, not attempted here — rather than removing more overhead.
+**Round two replaced the solver with Jonker & Volgenant's (1987) actual published
+algorithm** — the same one TreeDist's C++ implements — rather than the ad hoc row-reduction
+heuristic round one had settled on. This was **not primarily a speed change**: on this
+package's split-matching workload it lands within a few percent of the heuristic it
+replaced, which is itself already close to whatever the assignment solver's inherent cost
+is on this kind of matrix. The reason to make the change anyway is that it is the correct,
+well-specified algorithm rather than an ad hoc approximation of one — and porting it
+surfaced a real bug worth knowing about even if you never touch this code: two rows that
+are genuinely tied for the same column's best reduced cost can, after enough potential
+updates, present as differing by a single floating-point ulp rather than exactly. Treating
+that as "strictly less" sent the pair into an infinite tug-of-war over the column, each
+"win" tightening the potential by an amount too small to change anything next time. This
+package's own brute-force test suite caught it directly (a hang, not a wrong answer) before
+it reached anyone; the fix — a tolerance-scaled comparison (`_jvstrictlyless`) — mirrors a
+guard TreeDist's own solver already carries for the same reason, which this project had
+initially (wrongly) assumed was specific to TreeDist's integer-quantized costs rather than
+a real floating-point degeneracy.
 
 `agree` in `results.md`'s table uses a tolerance rather than exact equality, because the two
 implementations solve the underlying assignment problem with independently written
