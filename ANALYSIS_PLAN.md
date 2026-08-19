@@ -380,6 +380,30 @@ Produce these live in the MCP Julia session and let them go when it exits.
   later file's tests can break invisibly if an earlier file's helper is the one still
   relied upon. Prefer file-specific helper names over generically-named ones like `mask` or
   `caterpillar`.
+- 2026-08-19 (CHUNK-011, performance follow-up): **Column reduction is unsound for the
+  rectangular (n < m) assignment problem, even though it is standard and safe for the
+  square one.** `_hungarian`'s solver seeds row potentials from each row's own minimum
+  cost, which is always safe (dual-feasible regardless of shape). Seeding column
+  potentials too — the natural next step for n = m — can tie several columns at reduced
+  cost zero for one row purely because of what *other, unmatched-in-the-end* rows prefer,
+  not because those columns are equally good choices once only the n actually-matched
+  columns are counted; the greedy tie-break (first zero found wins) can then lock in a
+  worse column and never revisit it. Caught by the existing brute-force test suite on a
+  3×6 case (reported 5, true optimum 3), not by reasoning about the algorithm — the dual-
+  feasibility argument for why it "should" work is real but incomplete, since it ignores
+  that complementary slackness only certifies optimality relative to a *specific* set of
+  matched columns, and that set differs between the two candidate matchings. Any future
+  attempt to speed up `_hungarian` further (e.g. Jonker & Volgenant's augmenting row
+  reduction) needs to re-derive dual feasibility for the rectangular case explicitly
+  rather than porting square-case preprocessing directly — see the comment above the row
+  reduction in `src/assignment.jl` for the worked counterexample.
+- 2026-08-19 (CHUNK-011, performance follow-up): **The order rows are processed in does
+  not affect which matching the successive-shortest-augmenting-path solver finds, only how
+  much work finding it takes.** Sorting rows by their own minimum cost (ascending) before
+  processing — no change to the potentials or the algorithm itself — roughly halved the
+  number of augmenting-path steps on a ~1000-split matching. Safe to combine freely with
+  other row-level preprocessing (like the row reduction above) since neither touches
+  correctness, only scheduling.
 
 ## Chunks
 
@@ -1140,6 +1164,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-19 CHUNK-008 (validate-rf-and-quartet) → next: CHUNK-009
 - 2026-08-19 CHUNK-018 (quartet-distance-fast) → next: CHUNK-010
 - 2026-08-19 CHUNK-010 (split-matching-framework), CHUNK-011 (nye-similarity-and-jrf) → next: CHUNK-012
+- 2026-08-19 CHUNK-011 performance follow-up (assignment solver + score matrix) → next: CHUNK-012
 
 ## Open Questions
 
@@ -1148,12 +1173,25 @@ Produce these live in the MCP Julia session and let them go when it exits.
   through them — it uses the cluster-table encoding — but every metric built on
   `Splits` still will. Packing a split into a `UInt64` for n ≤ 64 would remove the factor;
   the `Splits` API hides the representation, so this changes nothing for callers.
-  **Now measured (2026-08-19, CHUNK-011):** `JaccardRobinsonFoulds` against
-  `TreeDist::JaccardRobinsonFoulds` is 4.5× faster at n=10 but 2–7× *slower* by n=1000
-  (`benchmark/results.md`), growing with size — the leading suspect is exactly this
-  `BitVector`-per-pair-score overhead, not the assignment algorithm. Worth doing before
-  CHUNK-012 through CHUNK-015 add more split-matching metrics on top of the same
-  representation.
+  **Measured, then substantially fixed (2026-08-19, CHUNK-011):** `JaccardRobinsonFoulds`
+  against `TreeDist::JaccardRobinsonFoulds` was 4.5× faster at n=10 but up to 7× *slower*
+  by n=1000, growing with size. The immediate cause was allocation, not the `BitVector`
+  representation itself: the pairwise score matrix called `count(a .& b)` per cell, and
+  broadcasting `.&` allocates a fresh `BitVector` every call. A direct population count
+  over the two masks' chunks (`_countand`, `src/generalizedrf.jl`) removed that allocation
+  without changing the representation, and reusing the assignment solver's scratch
+  buffers across rows (`src/assignment.jl`) removed a second allocation source of the same
+  order; together these cut allocation at n=1000 from 245 MB to 10 MB. A row-reduction and
+  row-ordering heuristic in the solver (safe regardless of starting point or processing
+  order — see the comment above it) then roughly halved the number of augmenting-path
+  steps needed. Net result: 5.1× faster at n=10, and only 1.3×/2.8×/3.2× slower at
+  n=50/200/1000 — see `benchmark/README.md` for the full account, including a real
+  correctness bug (unsound column reduction for the rectangular case) that a brute-force
+  test caught before it shipped. What remains of the gap is the assignment solver's
+  inherent cost; closing it further would mean porting Jonker & Volgenant's (1987)
+  "augmenting row reduction" preprocessing, not attempted here. Packing splits into
+  `UInt64` words remains a separate, not-yet-measured idea, worth revisiting once more
+  split-matching metrics (CHUNK-012 onward) exist to benchmark together.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
