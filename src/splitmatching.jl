@@ -30,8 +30,16 @@ function splitmatching(scorer, splits1::Splits, splits2::Splits; maximize::Bool 
         pairscore[i, j] = scorer(splits1.masks[i], splits2.masks[j], ntaxa)
     end
 
-    cost = maximize ? .-pairscore : pairscore
-    rowmatch, _, total = _hungarian(cost)
+    return _matchtotal(pairscore; maximize)
+end
+
+# Shared tail of the matching pipeline: given an already-built pairwise score matrix,
+# find the optimal matching and reduce it to a total. Split out so a metric that can score
+# every pair faster than one scorer call at a time — see `_jaccardscorematrix` — can build
+# `pairscore` itself and skip straight to this step.
+function _matchtotal(pairscore::AbstractMatrix{Float64}; maximize::Bool)
+    maximize && (pairscore .*= -1)
+    rowmatch, _, total = _hungarian(pairscore)
     score = maximize ? -total : total
     return (score = score, matching = rowmatch)
 end
