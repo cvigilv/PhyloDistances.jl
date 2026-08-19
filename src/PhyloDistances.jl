@@ -46,6 +46,7 @@ export Splits, splits
 export randomtree, perturb
 export RobinsonFoulds, WeightedRobinsonFoulds
 export QuartetDistance
+export NyeSimilarity, JaccardRobinsonFoulds
 
 # Distances.jl is the interface these metrics implement, and NewickTree.jl reads the trees
 # they consume; re-exporting means a user loading those packages too sees one set of
@@ -55,14 +56,17 @@ export readnw
 
 public branchlength, convention, incidencematrix, isnormalized, isrooted, issimilarity,
     istrivial, nni!, normalization, normalizer, normalizerinfo, requiresrooted,
-    taxonlabel, taxonlabels
+    splitmatching, taxonlabel, taxonlabels
 
 include("taxa.jl")
 include("random.jl")
 include("splits.jl")
 include("clustertable.jl")
+include("assignment.jl")
 include("interface.jl")
+include("splitmatching.jl")
 include("robinsonfoulds.jl")
 include("quartet.jl")
+include("generalizedrf.jl")
 
 end
