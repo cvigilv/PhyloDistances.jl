@@ -14,29 +14,51 @@ of the matched entries.
 possible when there are more rows than columns); `colmatch` gives the same from the
 column's side. `total` is the sum of `cost[i, rowmatch[i]]` over every matched row.
 
-The classical shortest-augmenting-path assignment algorithm with vertex potentials (Kuhn
-1955; Munkres 1957; the O(n²m) formulation), `O(min(n, m)² * max(n, m))` overall. Internal:
+Jonker & Volgenant's (1987) shortest-augmenting-path algorithm: column reduction and
+reduction transfer build a partial matching almost for free, augmenting row reduction
+resolves most of what remains with only a row's two cheapest options, and a bucket-based
+Dijkstra search settles whatever rows still need it. `O(n³)` worst case for a square
+problem, `O(dim³)` here where `dim = max(n, m)` — internal:
 [`splitmatching`](@ref) is the documented entry point that turns a matching into a score.
 """
 function _hungarian(cost::AbstractMatrix{<:Real})
     nr, nc = size(cost)
-    if nr <= nc
-        rowmatch, total = _hungarianwide(_asfloat(cost))
-        colmatch = zeros(Int, nc)
-        for i in eachindex(rowmatch)
-            rowmatch[i] == 0 && continue
-            colmatch[rowmatch[i]] = i
-        end
-        return rowmatch, colmatch, total
-    else
-        colmatch, total = _hungarianwide(_asfloat(permutedims(cost)))
-        rowmatch = zeros(Int, nr)
-        for j in eachindex(colmatch)
-            colmatch[j] == 0 && continue
-            rowmatch[colmatch[j]] = j
-        end
-        return rowmatch, colmatch, total
+    (nr == 0 || nc == 0) && return zeros(Int, nr), zeros(Int, nc), 0.0
+
+    fcost = _asfloat(cost)
+    dim = max(nr, nc)
+
+    # A rectangular assignment reduces to a square one by padding the shorter side with
+    # rows or columns of a single repeated value: however the `dim - min(nr, nc)` padding
+    # entries are distributed among the padding rows/columns, they contribute the same
+    # total, so the optimal square assignment always gives the real rows and columns their
+    # best mutual matching and leaves the padding to soak up whatever is left over. This
+    # holds for *any* single padding value, not just a large one — using the matrix's own
+    # maximum keeps every entry on a comparable scale to the real costs, positive or
+    # negative, rather than presuming a "large" constant is large enough.
+    padvalue = maximum(fcost)
+    padded = fill(padvalue, dim, dim)
+    @views padded[1:nr, 1:nc] .= fcost
+
+    rowsol, colsol = _jvlap(padded, dim)
+
+    rowmatch = zeros(Int, nr)
+    for i in 1:nr
+        j = rowsol[i]
+        j <= nc && (rowmatch[i] = j)
     end
+    colmatch = zeros(Int, nc)
+    for j in 1:nc
+        i = colsol[j]
+        i <= nr && (colmatch[j] = i)
+    end
+
+    total = 0.0
+    for i in 1:nr
+        rowmatch[i] == 0 && continue
+        total += fcost[i, rowmatch[i]]
+    end
+    return rowmatch, colmatch, total
 end
 
 # `float.(cost)` always allocates a fresh array, even when `cost` is already `Float64` —
@@ -45,138 +67,262 @@ end
 _asfloat(cost::AbstractMatrix{Float64}) = cost
 _asfloat(cost::AbstractMatrix{<:Real}) = float.(cost)
 
-# Requires n <= m; every row is matched to a distinct column. Column-indexed working
-# arrays (`v`, `p`, `way`, `minv`, `used`) are sized `m + 1` and indexed `1:(m + 1)`,
-# with index 1 standing in for the algorithm's usual sentinel column `0` — the classical
-# presentation is 0-indexed throughout, and shifting by one is simpler than reproducing
-# that indexing with OffsetArrays for a routine this small.
-function _hungarianwide(cost::AbstractMatrix{Float64})
-    n, m = size(cost)
-
-    # Row reduction: a dual-feasible starting point — cost[i,j] - u[i] - v[j] >= 0 for
-    # every i, j, since u[i] is literally row i's minimum and v starts at zero — cheap
-    # (one O(n*m) pass) and a much better starting guess than potentials of all zero, since
-    # it gives the search below a real chance of finding each row's own best column on the
-    # first pass rather than discovering the same reduction lazily through many augmenting
-    # steps. It stays valid for cost matrices with negative entries (this package always
-    # negates similarities before minimizing) because duality requires only feasibility,
-    # not nonnegativity of `cost` itself.
-    #
-    # Column reduction — the natural next step for the *square* assignment problem — is
-    # deliberately not added on top of this. With n < m, only n of the m columns end up
-    # matched, and reducing every column by its cross-row minimum can tie several columns
-    # at reduced cost zero for one row purely because of what unrelated rows prefer, not
-    # because those columns are equally good choices for *this* row once only the matched
-    # columns are counted. The tie-break below (first zero found wins) can then lock in a
-    # column that leaves a strictly better matching unreachable — caught by the brute-force
-    # comparison in test/test_assignment.jl on a 3x6 case where it silently returned 5
-    # instead of the true optimum 3.
-    u = Vector{Float64}(undef, n)
-    for i in 1:n
-        rowmin = cost[i, 1]
-        for j in 2:m
-            c = cost[i, j]
-            c < rowmin && (rowmin = c)
+# The smallest value in column `j` of a `dim x dim` cost matrix and the (first, on ties)
+# row that attains it.
+function _jvcolmin(cost::AbstractMatrix{Float64}, j::Int, dim::Int)
+    minval = cost[1, j]
+    imin = 1
+    for i in 2:dim
+        c = cost[i, j]
+        if c < minval
+            minval = c
+            imin = i
         end
-        u[i] = rowmin
+    end
+    return minval, imin
+end
+
+# The two smallest values of `cost[i, j] - v[j]` over every column `j`, and the column
+# attaining each. Augmenting row reduction (below) needs the runner-up as well as the
+# best, to tell a column that is uniquely best for this row from one that is merely tied
+# for best.
+function _jvrowsubmin(cost::AbstractMatrix{Float64}, i::Int, v::Vector{Float64}, dim::Int)
+    j1 = 1
+    umin = cost[i, 1] - v[1]
+    usubmin = Inf
+    j2 = 0
+    for j in 2:dim
+        h = cost[i, j] - v[j]
+        if h < umin
+            usubmin = umin
+            j2 = j1
+            umin = h
+            j1 = j
+        elseif h < usubmin
+            usubmin = h
+            j2 = j
+        end
+    end
+    return umin, usubmin, j1, j2
+end
+
+# Whether `a` is less than `b` by more than floating-point noise, not literally less.
+# Column potentials accumulate many small subtractions over the algorithm's run, so two
+# columns that are genuinely tied for a row's best choice can end up differing by an ulp
+# or two purely from rounding — and augmenting row reduction (below) uses "strictly less"
+# to decide whether a column is *uniquely* best for a row. Without this margin, two rows
+# tied at their best column can trade it back and forth forever: each swap "improves" the
+# potential by an amount too small to actually change which column looks best next time,
+# so the same false signal recurs. TreeDist's own solver guards the same comparison with
+# `nontrivially_less_than`, which this mirrors — a genuine floating-point degeneracy, not
+# merely a quantization artifact of its integer-scaled costs. The tolerance scales with
+# the compared values' own magnitude so it stays meaningful whether costs are near zero
+# or far from it.
+_jvstrictlyless(a::Float64, b::Float64) = a < b - 8 * eps(max(abs(a), abs(b), 1.0))
+
+"""
+    _jvlap(cost::Matrix{Float64}, dim::Int) -> (rowsol, colsol)
+
+The optimal assignment on a `dim x dim` cost matrix: `rowsol[i]` is the column matched to
+row `i` and `colsol[j]` is the row matched to column `j`, a mutually consistent bijection
+on `1:dim`. Every row and column is matched — there is no rectangular "leftover" here,
+that is handled by `_hungarian`'s caller, which pads to reach this shape.
+
+Jonker & Volgenant (1987), *A shortest augmenting path algorithm for dense and sparse
+linear assignment problems*, Computing 38: 325–340. Column reduction greedily claims each
+column's cheapest row, keeping only the tightest of several claims on one row; reduction
+transfer tightens the columns that ended up claimed exactly once, using each such row's
+second-best alternative; augmenting row reduction resolves most of what is still
+unassigned using only a row's two cheapest columns, occasionally displacing a weaker
+existing claim rather than searching further; and any row still unassigned after that is
+settled by an explicit shortest-augmenting-path search (a Dijkstra variant that partitions
+candidate columns into settled and frontier sets rather than rescanning all of them at
+every step). `0` is this package's "unmatched" sentinel throughout, standing in for the
+reference algorithm's `-1`.
+"""
+function _jvlap(cost::Matrix{Float64}, dim::Int)
+    v = Vector{Float64}(undef, dim)
+    rowsol = zeros(Int, dim)
+    colsol = zeros(Int, dim)
+    matches = zeros(Int, dim)
+
+    # COLUMN REDUCTION. Processing columns from last to first is the reference algorithm's
+    # own choice, not load-bearing here (any order visits every column exactly once and
+    # reaches the same partial matching) — kept only to stay a faithful, checkable port.
+    for j in dim:-1:1
+        minval, imin = _jvcolmin(cost, j, dim)
+        v[j] = minval
+        matches[imin] += 1
+        if matches[imin] == 1
+            rowsol[imin] = j
+            colsol[j] = imin
+        elseif v[j] < v[rowsol[imin]]
+            # A later (smaller-index) column claims this row more tightly than the
+            # column that claimed it first; take the row over, freeing the loser.
+            j1 = rowsol[imin]
+            rowsol[imin] = j
+            colsol[j] = imin
+            colsol[j1] = 0
+        else
+            colsol[j] = 0
+        end
     end
 
-    v = zeros(Float64, m + 1)
-
-    # The order rows are processed in never changes which matching is optimal — each row's
-    # search only ever augments the *current* partial matching by one more row, maintaining
-    # dual feasibility and complementary slackness regardless of which row goes next — but
-    # it changes how much work finding it costs. Rows with a low minimum tend to have a
-    # narrow set of good columns and force long eviction chains if processed late, after
-    # their best options are already claimed by less picky rows; processing the tightest
-    # rows first avoids that. Measured on a ~1000-split matching, this roughly halved the
-    # number of augmenting-path steps taken.
-    order = sortperm(u)
-
-    p = zeros(Int, m + 1)
-    way = zeros(Int, m + 1)
-
-    # Reused across every row rather than reallocated: the augmenting-path search below
-    # runs once per row, and a matching's split count can reach the hundreds, so a fresh
-    # allocation per row here was, before this fix, the single largest allocation source
-    # for split-matching metrics on trees of any real size.
-    #
-    # `used` is a dense `Vector{Bool}`, not a `BitVector`: it is read and written many
-    # times per row in the innermost loop, and `BitVector`'s bit-packed storage costs a
-    # mask-and-shift on every access — measurable here since `used` is checked once per
-    # candidate column, i.e. as often as the cost lookup itself. The memory this trades
-    # away is a single `Bool` per column, negligible next to `cost`.
-    minv = Vector{Float64}(undef, m + 1)
-    used = Vector{Bool}(undef, m + 1)
-
-    for i in order
-        p[1] = i
-        j0 = 1
-        fill!(minv, Inf)
-        fill!(used, false)
-        while true
-            used[j0] = true
-            i0 = p[j0]
-            delta = Inf
-            j1 = 0
-            # @inbounds on this loop and the one right after it covers every access in
-            # both: `j` ranges over 2:(m + 1) or 1:(m + 1), matching v/minv/way/used's
-            # declared size exactly, and `i0 = p[j0]` (here) and `p[j]` (in the next loop,
-            # only read where `used[j]` is true) are always row indices in 1:n by the
-            # algorithm's own invariant — p[1] is set to the current row above, and every
-            # other value p ever holds is copied from another p[·] that was itself
-            # established the same way (see the path-reconstruction loop below). Bounds
-            # checking these accesses showed up as a real share of run time on a
-            # ~1000-split matching in profiling, which is why this earns the annotation
-            # rather than being added by reflex; the claim is exercised by the
-            # brute-force and negative-cost correctness tests in test/test_assignment.jl,
-            # which check thousands of matrices including rectangular ones where a wrong
-            # `i0` or `p[j]` would show up as a wrong total, not necessarily a crash.
-            @inbounds for j in 2:(m + 1)
-                used[j] && continue
-                cur = cost[i0, j - 1] - u[i0] - v[j]
-                if cur < minv[j]
-                    minv[j] = cur
-                    way[j] = j0
-                end
-                if minv[j] < delta
-                    delta = minv[j]
-                    j1 = j
-                end
+    # REDUCTION TRANSFER. A row claimed by exactly one column has no rival to arbitrate
+    # against, so its column's potential can be tightened further using that row's
+    # second-best alternative — free information the column-reduction pass above did not
+    # use, since it only ever looked at each row's *best* option, never its second-best.
+    freeunassigned = zeros(Int, dim)
+    numfree = 0
+    for i in 1:dim
+        if matches[i] == 0
+            numfree += 1
+            freeunassigned[numfree] = i
+        elseif matches[i] == 1
+            j1 = rowsol[i]
+            mincost = Inf
+            for j in 1:dim
+                j == j1 && continue
+                rc = cost[i, j] - v[j]
+                rc < mincost && (mincost = rc)
             end
-            @inbounds for j in 1:(m + 1)
-                if used[j]
-                    u[p[j]] += delta
-                    v[j] -= delta
+            v[j1] -= mincost
+        end
+    end
+
+    # AUGMENTING ROW REDUCTION, two passes (a third rarely helps and the reference
+    # algorithm does not take one either). Each still-unassigned row looks at only its two
+    # cheapest columns: if the best is *uniquely* best, the column's potential tightens
+    # around it directly; otherwise, if the best column already belongs to another row,
+    # this row takes it anyway and bumps the previous occupant back onto the free list —
+    # a displacement chain that is still guaranteed to terminate in an improving
+    # assignment, not a cycle, because each displacement strictly tightens some potential.
+    loopcnt = 0
+    while loopcnt < 2
+        loopcnt += 1
+        previous_numfree = numfree
+        numfree = 0
+        k = 1
+        while k <= previous_numfree
+            i = freeunassigned[k]
+            k += 1
+            umin, usubmin, j1, j2 = _jvrowsubmin(cost, i, v, dim)
+            i0 = colsol[j1]
+            strictly_less = _jvstrictlyless(umin, usubmin)
+            if strictly_less
+                v[j1] -= (usubmin - umin)
+            elseif i0 != 0
+                j1 = j2
+                i0 = colsol[j2]
+            end
+            rowsol[i] = j1
+            colsol[j1] = i
+            if i0 != 0
+                if strictly_less
+                    # The displaced row might immediately find another uniquely-best
+                    # column, so it is retried within *this* pass rather than deferred.
+                    k -= 1
+                    freeunassigned[k] = i0
                 else
-                    minv[j] -= delta
+                    numfree += 1
+                    freeunassigned[numfree] = i0
                 end
             end
-            j0 = j1
-            p[j0] != 0 || break
-        end
-        while true
-            j1 = way[j0]
-            p[j0] = p[j1]
-            j0 = j1
-            j0 != 1 || break
         end
     end
 
-    rowmatch = zeros(Int, n)
-    for j in 2:(m + 1)
-        p[j] == 0 && continue
-        rowmatch[p[j]] = j - 1
+    # AUGMENT SOLUTION. Whatever rows augmenting row reduction could not place get a full
+    # shortest-augmenting-path search each: `d` holds the current shortest known reduced
+    # distance from `free_row` to each column, `pred` the row that distance was reached
+    # through, and `cl[1:low-1]` / `cl[low:up-1]` / `cl[up:dim]` partition the columns into
+    # settled, newly-settled-at-the-current-minimum, and frontier — so each round of
+    # Dijkstra only rescans the frontier rather than every column.
+    d = Vector{Float64}(undef, dim)
+    pred = Vector{Int}(undef, dim)
+    cl = Vector{Int}(undef, dim)
+
+    for f in 1:numfree
+        free_row = freeunassigned[f]
+        for j in 1:dim
+            d[j] = cost[free_row, j] - v[j]
+            pred[j] = free_row
+            cl[j] = j
+        end
+
+        unassignedfound = false
+        endofpath = 0
+        last = 0
+        low = 1
+        up = 1
+        min_ = 0.0
+
+        while !unassignedfound
+            if up == low
+                last = low - 1
+                min_ = d[cl[up]]
+                up += 1
+                for k in up:dim
+                    j = cl[k]
+                    h = d[j]
+                    if h <= min_
+                        if h < min_
+                            up = low
+                            min_ = h
+                        end
+                        cl[k] = cl[up]
+                        cl[up] = j
+                        up += 1
+                    end
+                end
+                for k in low:(up - 1)
+                    if colsol[cl[k]] == 0
+                        endofpath = cl[k]
+                        unassignedfound = true
+                        break
+                    end
+                end
+            end
+
+            if !unassignedfound
+                j1 = cl[low]
+                low += 1
+                i = colsol[j1]
+                h = cost[i, j1] - v[j1] - min_
+                for k in up:dim
+                    j = cl[k]
+                    v2 = cost[i, j] - v[j] - h
+                    if v2 < d[j]
+                        pred[j] = i
+                        if v2 == min_
+                            if colsol[j] == 0
+                                endofpath = j
+                                unassignedfound = true
+                                break
+                            else
+                                cl[k] = cl[up]
+                                cl[up] = j
+                                up += 1
+                            end
+                        end
+                        d[j] = v2
+                    end
+                end
+            end
+        end
+
+        for k in 1:last
+            j1 = cl[k]
+            v[j1] += d[j1] - min_
+        end
+
+        i = 0
+        j1 = endofpath
+        while i != free_row
+            i = pred[j1]
+            colsol[j1] = i
+            j1, rowsol[i] = rowsol[i], j1
+        end
     end
 
-    # Read off the matched entries directly rather than from a potential-sum identity
-    # (`-v[1]` in earlier versions of this function): every row is matched since n <= m,
-    # and this way the total is correct regardless of how u and v were initialized, with
-    # nothing downstream depending on a particular choice of starting potentials being
-    # "the" canonical one.
-    total = 0.0
-    for i in 1:n
-        total += cost[i, rowmatch[i]]
-    end
-    return rowmatch, total
+    return rowsol, colsol
 end
