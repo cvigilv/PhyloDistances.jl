@@ -31,6 +31,7 @@ JuliaLocalPreferences.toml
 benchmark/trees/
 benchmark/results_rf_r.tsv
 benchmark/results_quartet_r.tsv
+benchmark/results_jrf_r.tsv
 
 # MacOS system files
 .DS_Store

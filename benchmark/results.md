@@ -23,10 +23,10 @@ its garbage collector saw, which includes everything already resident.
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs |
 |-----:|---------------:|---------:|------:|------------:|-------------:|
-| 10 | 1.6 µs | 42.0 µs | 27.0× faster | 0.01 MB | 101 |
-| 50 | 5.8 µs | 49.8 µs | 8.6× faster | 0.02 MB | 107 |
-| 200 | 27.0 µs | 124.9 µs | 4.6× faster | 0.07 MB | 123 |
-| 1000 | 128.7 µs | 2.48 ms | 19.2× faster | 0.34 MB | 171 |
+| 10 | 3.0 µs | 56.0 µs | 18.8× faster | 0.01 MB | 101 |
+| 50 | 8.7 µs | 67.0 µs | 7.7× faster | 0.02 MB | 107 |
+| 200 | 34.9 µs | 161.9 µs | 4.6× faster | 0.07 MB | 123 |
+| 1000 | 182.0 µs | 3.24 ms | 17.8× faster | 0.34 MB | 171 |
 
 ## Robinson-Foulds, all pairs within a collection
 
@@ -34,9 +34,9 @@ its garbage collector saw, which includes everything already resident.
 
 | | time | per pair |
 |---|-----:|---------:|
-| PhyloDistances | 6.83 ms | 8.8 µs |
-| TreeDist | 1.95 ms | 2.5 µs |
-| ratio | 3.5× slower | |
+| PhyloDistances | 9.75 ms | 12.5 µs |
+| TreeDist | 2.54 ms | 3.3 µs |
+| ratio | 3.8× slower | |
 
 ## Quartet distance, one pair of trees
 
@@ -46,13 +46,13 @@ rows past that size have no reference to compare against.
 
 | taxa | quartets | PhyloDistances | Quartet | ratio | Julia alloc | agree |
 |-----:|---------:|---------------:|--------:|------:|------------:|:------|
-| 10 | 210 | 17.6 µs | 1.40 ms | 79.7× faster | 0.03 MB | yes |
-| 50 | 230,300 | 427.2 µs | 11.25 ms | 26.3× faster | 0.41 MB | yes |
-| 200 | 64,684,950 | 17.24 ms | 160.91 ms | 9.3× faster | 5.29 MB | yes |
-| 477 | 2,130,031,575 | 218.29 ms | 899.19 ms | 4.1× faster | 30.46 MB | yes |
-| 700 | 9,918,641,075 | 681.28 ms | — | — | 61.85 MB | — |
-| 1000 | 41,417,124,750 | 1.96 s | — | — | 126.66 MB | — |
-| 1500 | 210,094,780,875 | 7.33 s | — | — | 283.49 MB | — |
+| 10 | 210 | 23.3 µs | 1.89 ms | 81.1× faster | 0.03 MB | yes |
+| 50 | 230,300 | 498.2 µs | 13.93 ms | 28.0× faster | 0.41 MB | yes |
+| 200 | 64,684,950 | 23.23 ms | 205.44 ms | 8.8× faster | 5.29 MB | yes |
+| 477 | 2,130,031,575 | 291.12 ms | 1.10 s | 3.8× faster | 30.46 MB | yes |
+| 700 | 9,918,641,075 | 893.83 ms | — | — | 61.85 MB | — |
+| 1000 | 41,417,124,750 | 2.71 s | — | — | 126.66 MB | — |
+| 1500 | 210,094,780,875 | 11.16 s | — | — | 283.49 MB | — |
 
 `QuartetDistance`'s default `:fast` algorithm counts concordant quartets 
 in `O(n³)` without enumerating them (`algorithm = :naive` keeps the exact 
@@ -60,3 +60,18 @@ in `O(n³)` without enumerating them (`algorithm = :naive` keeps the exact
 counts the same quantity in `O(n log n)` without enumerating it either — 
 so the remaining gap past 477 taxa is an algorithm gap, not a language one, 
 and it would still widen without bound past where this benchmark stops.
+
+## Jaccard-Robinson-Foulds, one pair of trees
+
+`JaccardRobinsonFoulds()` at its `k = 1, allowconflict = true` default — the 
+scoring [`NyeSimilarity`](@ref) also uses. Both implementations solve an 
+assignment problem over the trees' splits; `agree` uses a tolerance rather 
+than exact equality because the two solvers round differently internally 
+(see `validation/crosscheck.jl`'s `_closeenough`), not because either is wrong.
+
+| taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs | agree |
+|-----:|---------------:|---------:|------:|------------:|-------------:|:------|
+| 10 | 15.5 µs | 70.1 µs | 4.5× faster | 0.02 MB | 564 | yes |
+| 50 | 198.6 µs | 101.8 µs | 2.0× slower | 0.37 MB | 8733 | yes |
+| 200 | 3.28 ms | 557.2 µs | 5.9× slower | 6.40 MB | 124713 | yes |
+| 1000 | 152.61 ms | 21.71 ms | 7.0× slower | 245.72 MB | 3024155 | yes |

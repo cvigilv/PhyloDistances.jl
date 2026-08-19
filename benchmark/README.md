@@ -2,8 +2,9 @@
 
 Compares this package against the R packages whose values it reproduces —
 [TreeDist](https://github.com/ms609/TreeDist) for Robinson-Foulds and
-[Quartet](https://github.com/ms609/Quartet) for the quartet distance — so that agreeing on
-results does not quietly cost an order of magnitude in speed.
+Jaccard-Robinson-Foulds, and [Quartet](https://github.com/ms609/Quartet) for the quartet
+distance — so that agreeing on results does not quietly cost an order of magnitude in
+speed.
 
 ## Running
 
@@ -116,3 +117,35 @@ no reference column because of it, not because the comparison was skipped.
 `run.jl` checks that both implementations returned the same distance for every pair it
 timed, and the table says so per row — a benchmark that quietly measured two different
 computations would be worthless.
+
+### Jaccard-Robinson-Foulds
+
+| taxa | PhyloDistances | TreeDist | ratio |
+|-----:|---------------:|---------:|------:|
+| 10 | 15.5 µs | 70.1 µs | 4.5× faster |
+| 50 | 198.6 µs | 101.8 µs | 2.0× slower |
+| 200 | 3.28 ms | 557.2 µs | 5.9× slower |
+| 1000 | 152.6 ms | 21.7 ms | 7.0× slower |
+
+Unlike Robinson-Foulds and the quartet distance, this is **not currently a speed win**, and
+the gap widens with tree size. `JaccardRobinsonFoulds` reduces to an assignment problem over
+`O(n)` splits per tree, so the pairwise score matrix and the assignment solver are each
+`O(n²)`–`O(n³)` in the number of splits — but this package builds that matrix with one
+scorer call per cell, allocating a `BitVector` intersection (`count(a .& b)`) each time,
+where TreeDist packs each split into fixed-width machine words and computes the same
+overlap with a handful of masked integer operations. That representational gap, not the
+assignment algorithm, is the leading suspect for the slowdown; CHUNK-010's Open Questions
+already flag `Splits`' `BitVector` representation as the thing to revisit once the first
+split-matching metric was benchmarked; this is that benchmark. Packing splits into `UInt64`
+words for `n ≤ 64` (with a wider-word fallback beyond) would let split intersection and
+Jaccard-count arithmetic run at the same granularity TreeDist's C++ does, and is the
+natural next step if this metric's speed matters for a workload — not attempted in this
+chunk, which prioritized correctness and matching TreeDist's values exactly.
+
+`agree` in the table below uses a tolerance rather than exact equality, because the two
+implementations solve the underlying assignment problem with independently written
+solvers — this package's vendored one over exact `Float64` costs, TreeDist's over costs
+quantized for its integer solver — so the two can differ in the last few significant
+digits even when both found the true optimum. See `validation/crosscheck.jl`'s
+`_closeenough` and its validation report for the correctness case; this section is about
+speed only.
