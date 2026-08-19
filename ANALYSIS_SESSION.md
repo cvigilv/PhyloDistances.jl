@@ -6,94 +6,105 @@
 
 ## What was just completed
 
-CHUNK-018: quartet-distance-fast. `QuartetDistance` now defaults to an `O(n³)` algorithm
-that counts concordant quartets without enumerating them, replacing the `O(n⁴)` direct
-enumeration as the default (that enumeration is still available via `algorithm = :naive`,
-and remains the correctness oracle the fast path is tested against).
+CHUNK-010 (split-matching-framework) and CHUNK-011 (nye-similarity-and-jrf), done together
+in one session at the user's request ("implement JRF and validate against TreeDist").
 
-At n=1500 (a size the user specifically wanted usable), a single pairwise call dropped from
-an extrapolated ~15 minutes to ~7–8 seconds — checked on both a random binary tree and a
-100-taxon caterpillar (the shape most likely to expose an unbalanced-tree bug).
+CHUNK-010 built the generalized Robinson-Foulds reduction: a vendored linear-assignment
+solver (`src/assignment.jl`, `_hungarian` — the classical shortest-augmenting-path
+algorithm with vertex potentials, `O(min(n,m)² max(n,m))`, working on exact `Float64`
+costs) and a public matching framework (`src/splitmatching.jl`, `splitmatching(scorer,
+splits1, splits2; maximize)`) that turns any pairwise split-scoring function into an
+optimal-matching total.
+
+CHUNK-011 built `NyeSimilarity` (a `TreeSimilarity`) and `JaccardRobinsonFoulds` (a
+`TreeMetric`, fields `k` and `allowconflict`) on top of that framework, both scored by
+`_jaccardscore` — a port of TreeDist's `jaccard_similarity` C++ scorer
+(`src/generalizedrf.jl`).
 
 ## Key decisions made
 
-- **O(n³), not tqDist's O(n log n).** Asked the user directly: tqDist's algorithm needs a
-  dynamic Hierarchical Decomposition Tree ported from a research paper, high implementation
-  risk with a failure mode (silent wrong answers on large unbalanced trees) that an n≤12
-  brute-force cross-check would not reliably catch. The user chose the lower-risk O(n³)
-  trade explicitly. If ~7 s per pair is later found inadequate, tqDist is the documented
-  next step (Open Questions).
-- **The fast path requires at least one input tree to be binary.** For two polytomous
-  trees, exactness would need a materially harder computation (see Working knowledge in the
-  plan). Rather than implement that or silently give a wrong answer, `:fast` warns and falls
-  back to `:naive` — a real performance cliff for that case, but a visible one, consistent
-  with the project's fail-fast stance. Confirmed both directions work: the fast path handles
-  one polytomous tree exactly (no fallback needed, since an unresolved quartet there can
-  never be concordant against a binary tree), and both-polytomous correctly triggers the
-  warning and matches `:naive`.
-- **`algorithm` is a field, not a call keyword**, per the project's settled design decision;
-  `QuartetDistance(; algorithm = :fast)` (default) or `:naive`, validated at construction.
+- **Both Nye and JRF, not JRF alone.** Asked the user; they chose "both" since Nye is JRF's
+  `k=1, allowconflict=true` case computed as a similarity, so building JRF builds Nye's
+  scoring for free.
+- **The vendored solver is Kuhn-Munkres/Munkres over exact `Float64`, not a port of
+  TreeDist's integer-quantized Jonker-Volgenant.** TreeDist scales costs to `Int64` (`BIG =
+  typemax(Int64) ÷ SL_MAX_SPLITS`) for its solver; this package doesn't need that trick in
+  Julia and uses exact floating-point costs throughout. Consequence: values agree with
+  TreeDist to a tolerance (`atol=1e-9, rtol=1e-6`), not bitwise — see Working knowledge.
+- **`splitmatching` is `public` but not exported**, matching the treatment of
+  `normalizerinfo`, `convention`, etc. — an extension point, not an everyday call.
 
 ## State of the codebase
 
-- Files modified: `src/quartet.jl` (the fast algorithm, `_naivequartetdistance` split out of
-  the old `_compare` body, the `algorithm` field), `src/clustertable.jl` (`_rootedorder`
-  gained an optional `target` taxon-position parameter, default `1`, so it can root a
-  `FlatTree` at any leaf — Robinson-Foulds' call site is unchanged), `test/test_quartet.jl`
-  (algorithm-selection and fast-vs-naive tests).
-- Package loads cleanly: yes, on Julia 1.12.6
-- Test suite passes: yes — **1319 tests**, up from 1274, no R and no network
-- Entry points: `QuartetDistance()(t1, t2)` (fast by default),
-  `QuartetDistance(; algorithm = :naive)(t1, t2)` (the O(n⁴) oracle)
-- Known issues: none in what's implemented; the two-polytomy case is a documented
-  performance gap, not a bug (see Open Questions in the plan)
+- Files created: `src/assignment.jl`, `src/splitmatching.jl`, `src/generalizedrf.jl`,
+  `test/test_assignment.jl`, `test/test_splitmatching.jl`, `test/test_generalizedrf.jl`,
+  `benchmark/jrf.R`.
+- Files modified: `src/PhyloDistances.jl` (new includes/exports), `test/runtests.jl` (new
+  includes), `validation/crosscheck.jl` (Nye/JRF cross-check against TreeDist, extended
+  `checkpair`/`QUANTITIES`/report text), `benchmark/run.jl` (`benchmarkjrf`, `jrf.R`
+  invocation, new report section, banner deduplication), `.gitignore`
+  (`benchmark/results_jrf_r.tsv`).
+- Package loads cleanly: yes, Julia 1.12.6.
+- Test suite passes: yes — **4448 tests**, up from 4444 (net +4 after adding several
+  hundred new tests and removing nothing), no R and no network for the committed suite.
+- Entry points: `NyeSimilarity()(t1, t2)`, `JaccardRobinsonFoulds()(t1, t2)`,
+  `JaccardRobinsonFoulds(; k = 2, allowconflict = false)(t1, t2)`,
+  `PhyloDistances.splitmatching(scorer, splits1, splits2)` for a custom metric.
+- Known issues: none functionally; a real performance gap is documented (below).
 
-## Algorithm, briefly
+## Validation against TreeDist
 
-An unrooted quartet's topology is a rooted triple under any one of its four members as
-outgroup, and every quartet is discovered exactly four times this way (once per member).
-Summing rooted-triple agreement between the two trees over all `n` choices of root and
-dividing by four gives the quartet agreement count — turning
-"enumerate `binomial(n,4)` quartets" into "for each of `n` roots, count agreement over
-`binomial(n-1,3)` triples without enumerating those either." For a fixed root, leaf pairs
-are grouped by their most-recent-common-ancestor in tree 1 (discovered for free while
-walking tree 1's structure), and for each group a T2-position-indexed membership array
-(built once per branch point, `O(n)`) turns "how many of this T1 clade's leaves lie in a
-given T2 clade" into an `O(1)` prefix-sum lookup — giving `O(n²)` per root, `O(n³)` overall.
-Full derivation and the two-position-numbering trap that cost an hour of debugging are in
-the plan's Working knowledge, dated 2026-08-19 under CHUNK-018.
+`validation/crosscheck.jl` (`julia --project=validation validation/crosscheck.jl 3000`,
+run this session with Nix R 4.4.2 on `PATH`): **3,140 generated cases, 0 mismatches** for
+`NyeSimilarity()`, `NyeSimilarity(normalize=true)`, `JaccardRobinsonFoulds()`,
+`JaccardRobinsonFoulds(k=2, allowconflict=false)`, and
+`JaccardRobinsonFoulds(normalize=true)`, alongside the pre-existing RF/quartet checks
+(also 0 mismatches). Committed report: `validation/report.md`.
 
-## Verification beyond the plan's bar
+Unlike RF and the quartet distance, this comparison is **tolerance-based, not bitwise** —
+see Working knowledge for why that is the correct bar here, not a weaker one.
 
-- Naive-vs-fast cross-check: 270 random binary-tree pairs (n=4–12), 30 more at n=20/50/100,
-  240 one-polytomy pairs and 240 both-polytomy pairs (n=4–15), a 100-taxon caterpillar pair.
-  All exact matches. The n=1500 and caterpillar timing runs were exploratory (not committed);
-  the committed suite (`test/test_quartet.jl`) keeps a representative slice.
-- An internal `total % 4 == 0` assertion inside `_fastconcordantcount` (every concordant
-  triple must be discovered at exactly 4 of the `n` roots) caught the position-numbering bug
-  described above before it reached the naive-comparison tests — worth keeping as a
-  standing correctness check, not just a debugging aid.
+## Benchmark against TreeDist
+
+`benchmark/run.jl` (run this session): **PhyloDistances is currently slower than TreeDist
+for this metric, and the gap widens with tree size** — 4.5× faster at n=10, but 2.0×
+slower at n=50, 5.9× slower at n=200, 7.0× slower at n=1000. This is the opposite of the
+RF and quartet-distance results, both of which are faster here at every measured size.
+Diagnosed (not yet fixed — out of this chunk's scope) in `benchmark/README.md`: the
+`Splits` type stores each split as a `BitVector`, so `splitmatching`'s O(n²) score-matrix
+build does one allocating `count(a .& b)` per cell, where TreeDist packs splits into
+machine words and computes the same overlap with masked integer ops. Full numbers in
+`benchmark/results.md`.
 
 ## Next chunk
 
-Per the agreed sequence (Working stance note, set 2026-08-19): **CHUNK-010
-(split-matching-framework)** next — the vendored optimal-assignment solver and the
-generalized-RF matching engine that CHUNK-011 through CHUNK-015 reduce to. CHUNK-013
-(split-information-primitives) is independent and can be built before or alongside it.
+Per the plan's session ledger: **CHUNK-012 (matching-split-distance)**, which depends only
+on CHUNK-010 (now complete) — a straightforward second scoring function over
+`splitmatching`. CHUNK-013 (split-information-primitives) remains independent and can be
+picked up instead or alongside.
+
+**Before either**, consider whether to spend a chunk on the `Splits` `BitVector` → packed
+representation switch flagged above — CHUNK-012, CHUNK-014, and CHUNK-015 all build more
+split-matching metrics on the same representation, so the performance gap will replicate
+across each of them if left unaddressed. Not urgent (correctness is unaffected either
+way), but cheaper to fix once than to duplicate.
 
 ## Watch out for
 
 - Everything already flagged in prior handoffs still applies (Nix R path, `readnw` and
   `SubString`, the ~400 uncaptured rooting warnings in `test_robinsonfoulds.jl`, `Bool <:
   Real`, `NewickTree.Node` construction, no bare `using AbstractTrees`/`using NewickTree`).
-- **This worktree's `ANALYSIS_PLAN.md` was rebased from the shared checkout's *last commit*
-  (085c99d), not its working tree.** The shared checkout had uncommitted edits to the plan
-  (the "Agreed sequence" note, richer CHUNK-018/CHUNK-010 notes) that were never committed;
-  this session read them from the shared checkout directly and folded them into this
-  worktree's copy alongside the CHUNK-018 completion notes, so nothing should be lost — but
-  when merging, diff against the shared checkout's current `ANALYSIS_PLAN.md` rather than
-  assuming a plain fast-forward captures everything.
-- If a future session extends the fast algorithm to handle two polytomous trees, the
-  building block it is missing is a per-node-pair contingency-table count (leaves split
-  across ≥3 children of a branch point in *both* trees simultaneously) — sketched but not
-  derived in detail in the plan's Open Questions.
+- **Test files share one namespace.** `test/runtests.jl` `include`s every file into one
+  `@testset` in `Main`, not separate modules. A same-name helper in two files silently
+  shadows rather than errors, and if the arities coincide too (`caterpillar(x)` in two
+  files, taking different kinds of `x`), the second file's definition permanently replaces
+  the first's for anything included afterward. This session renamed collisions found this
+  way (`mask` → `splitmask`, `caterpillar` → `orderedcaterpillar` in the new files) but did
+  not audit the rest of the suite for the same risk — worth a pass if it ever causes a
+  confusing failure.
+- **A hand-verification that repeats the same arithmetic the code performs will not catch
+  a bug in that arithmetic.** This session's `_jaccardscore` bug (`nA` instead of `nB` in
+  one term) passed hand-checked cases for exactly this reason — the check used the same
+  wrong formula. It was caught by matching-order symmetry, a property independent of how
+  the scorer computes its answer. Prefer structural checks (symmetry, a known limit,
+  brute-force) over redoing an implementation's derivation by hand when verifying a port.

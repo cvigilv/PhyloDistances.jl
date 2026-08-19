@@ -362,6 +362,24 @@ Produce these live in the MCP Julia session and let them go when it exits.
   roots) failing on a 5-taxon case in testing, not by the n≤12 brute-force sweep alone,
   which happened to pass first on an unrelated seed — the divisibility check is cheap
   insurance worth keeping.
+- 2026-08-19 (CHUNK-011): **A hand-verification that repeats the same derivation the code
+  performs will not catch an arithmetic bug in that derivation** — it will confirm it,
+  since the same mistake gets made twice. `_jaccardscore`'s `A_and_B = nA - a_and_B` (should
+  be `nB - a_and_B`) passed hand-checked test cases because the by-hand check used the same
+  wrong formula. What caught it was a property that does *not* require redoing the
+  arithmetic: matching-order symmetry (`splitmatching(scorer, s1, s2)` must equal
+  `splitmatching(flip(scorer), s2, s1)`), which is mathematically necessary regardless of
+  how the scorer computes its answer. When porting a formula from a reference
+  implementation, prefer independent structural checks (symmetry, a known limit, a
+  brute-force cross-check) over hand-deriving the same numbers the code derives — the
+  latter only proves the deriver was consistent with themselves, not with the reference.
+- 2026-08-19 (CHUNK-010/011): **Test files in `test/` share one namespace, not one per
+  file.** `runtests.jl` `include`s every file into the same `@testset` in `Main`, so two
+  files defining a same-name, same-arity helper (`mask`, `caterpillar`) silently redefine
+  each other rather than erroring — Julia's method-table warning is easy to miss, and a
+  later file's tests can break invisibly if an earlier file's helper is the one still
+  relied upon. Prefer file-specific helper names over generically-named ones like `mask` or
+  `caterpillar`.
 
 ## Chunks
 
@@ -733,31 +751,87 @@ Produce these live in the MCP Julia session and let them go when it exits.
   information-theoretic metrics are instances of this framework differing only in the
   pairwise scoring function. Expose the framework as a documented public entry point so
   users can supply their own scoring function; keep the solver internal.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-004
 - **Verification strategy**: The vendored solver is checked against brute-force
   permutation search over all matchings for cost matrices small enough to enumerate
   exhaustively (≤8×8), including rectangular and tied-cost cases. The framework itself is
   checked for symmetry in its two arguments.
-- **Notes**: **Scheduled after CHUNK-018 (2026-08-19).** Getting this chunk right collapses
-  CHUNK-011 through CHUNK-015 into scoring functions plus tests. Since the solver is
-  vendored, its test set is part of the package's correctness surface — treat it as a
-  first-class component, not a helper.
+- **Notes**: Lives in `src/assignment.jl` (`_hungarian`, internal) and
+  `src/splitmatching.jl` (`splitmatching`, `public`). The solver is the classical
+  shortest-augmenting-path assignment algorithm with vertex potentials (Kuhn 1955; Munkres
+  1957), `O(min(n,m)² max(n,m))`, working directly on `Float64` costs — no integer
+  quantization, unlike TreeDist's C++ solver (see CHUNK-011 notes). Handles rectangular
+  matrices by internally solving whichever orientation has fewer rows, then mapping the
+  result back; the smaller side is always fully matched, the larger side's excess is left
+  unmatched (`0`).
 
-  CHUNK-013's information primitives are independent of this chunk and of each other, so
-  they can be built before or alongside it; CHUNK-014 and CHUNK-015 need both.
+  `splitmatching(scorer, splits1, splits2; maximize = true)` takes a scorer of
+  `(mask1, mask2, ntaxa) -> Real` and returns `(score, matching)`. Verified against
+  3,000+ random rectangular and all-tied cost matrices up to 8×8 (`test/test_assignment.jl`)
+  and hand-computed matchings including one where the optimal solution leaves a
+  positive-overlap pair unmatched in favor of a better global assignment
+  (`test/test_splitmatching.jl`).
+
+  **Test-file naming collision, not a chunk bug but worth flagging for future test
+  authors**: all `test/*.jl` files run via plain `include` inside one shared `@testset` in
+  `test/runtests.jl`, not in separate modules, so a helper function defined identically in
+  two files (e.g. a `mask` builder) silently shadows the earlier one — usually harmless,
+  but a *different*-signature same-name function (this session first wrote a second
+  `caterpillar` helper) redefines the method other files rely on and can break tests
+  included later, invisibly. Give test helpers file-specific names
+  (`splitmask`, `orderedcaterpillar`) rather than reusing common ones.
 
 ### CHUNK-011: nye-similarity-and-jrf
 - **Description**: Nye et al. similarity — each split pair scored by the size of the
   largest split consistent with both, normalized by the Jaccard index — and the
   Jaccard-Robinson-Foulds extension with its `k` exponent and its conflict-treatment
   parameter. Implemented as scoring functions plugged into CHUNK-010.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-010
 - **Verification strategy**: Hand-computed scores for individual split pairs; identical
   trees → maximal similarity; the documented JRF parameter values that reduce it to RF
   actually do so.
-- **Notes**:
+- **Notes**: Lives in `src/generalizedrf.jl`, exporting `NyeSimilarity` (`TreeSimilarity`)
+  and `JaccardRobinsonFoulds` (`TreeMetric`). Both share one pair scorer, `_jaccardscore`,
+  porting TreeDist's `jaccard_similarity` (`src/tree_distances.cpp`): for splits `a|A` and
+  `b|B`, the score is `max(min(J(a,b), J(A,B)), min(J(a,B), J(A,b)))^k` where `J` is the
+  Jaccard index, and `allowconflict = false` forces incompatible pairs to score `0`
+  instead. `NyeSimilarity` is exactly `k = 1, allowconflict = true`, computed as a
+  similarity rather than doubled-and-subtracted into a distance.
+
+  **A transcription bug, caught by a symmetry test, corrected a wrong intuition about the
+  metric.** The first port computed the fourth pairwise-overlap count as `nA - a_and_B`
+  instead of `nB - a_and_B` (TreeDist's C++: `A_and_B = nB - a_and_B`) — silently wrong
+  only when the two splits differ in size, so small hand-checked examples with same-size
+  splits didn't expose it. Its symptom was **not** a wrong number so much as a wrong
+  belief: with the bug, a merely-nested (compatible but unequal) split pair scored exactly
+  1.0, identical to a truly-identical pair, which made "`JaccardRobinsonFoulds` need not
+  converge to `RobinsonFoulds` as `k → ∞`" look like a true, provable property (nesting
+  gives free credit RF doesn't). It isn't: fixing the formula showed nesting scores *below*
+  1 whenever the splits are unequal (proof: `J(a,b) = 1 ⟺ a = b`, and orientation makes the
+  opposite pairing unreachable for canonically-oriented splits), so only exact matches
+  survive as `k → ∞` and the limit *is* `RobinsonFoulds` exactly — confirmed for 50 random
+  tree pairs and the fixed committed test. The bug was invisible to hand-verification
+  because the same arithmetic mistake was repeated by hand each time; only a property that
+  doesn't depend on redoing the arithmetic (matching-order symmetry) caught it. See
+  Working knowledge for the general lesson.
+
+  Verified beyond the plan's bar: `test/test_generalizedrf.jl` covers hand-computed pair
+  scores (identical, nested-unequal, conflicting), the `k=1,allowconflict=true ≡
+  NyeSimilarity` identity, monotonic convergence to `RobinsonFoulds` as `k` grows (up to
+  `k=200`), a case where `allowconflict` genuinely changes the result (most random pairs
+  don't exercise it), normalization, and symmetry over a random tree collection. **Cross-
+  validated against TreeDist 2.14.1 directly** (`validation/crosscheck.jl`, extended this
+  session): 3,140 generated cases, 0 mismatches, for `NyeSimilarity()`,
+  `NyeSimilarity(normalize=true)`, `JaccardRobinsonFoulds()`,
+  `JaccardRobinsonFoulds(k=2, allowconflict=false)`, and
+  `JaccardRobinsonFoulds(normalize=true)`. Unlike RF/quartet, this comparison uses a
+  tolerance (`atol=1e-9, rtol=1e-6`) rather than bitwise equality, since TreeDist's C++
+  solver optimizes over `Int64`-quantized costs (`BIG = typemax(Int64) ÷ SL_MAX_SPLITS`)
+  while this package's vendored solver uses exact `Float64` — see `_closeenough` in
+  `crosscheck.jl`. Benchmarked against `TreeDist::JaccardRobinsonFoulds` at n=10/50/200/1000
+  in `benchmark/` (see `results.md`).
 
 ### CHUNK-012: matching-split-distance
 - **Description**: Matching split distance — split pairs scored by the number of leaves
@@ -1065,6 +1139,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-17 CHUNK-007 (quartet-distance-exact) → next: CHUNK-008
 - 2026-08-19 CHUNK-008 (validate-rf-and-quartet) → next: CHUNK-009
 - 2026-08-19 CHUNK-018 (quartet-distance-fast) → next: CHUNK-010
+- 2026-08-19 CHUNK-010 (split-matching-framework), CHUNK-011 (nye-similarity-and-jrf) → next: CHUNK-012
 
 ## Open Questions
 
@@ -1072,8 +1147,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
   and comparison is O(n) and set operations come to O(n²). Robinson-Foulds no longer goes
   through them — it uses the cluster-table encoding — but every metric built on
   `Splits` still will. Packing a split into a `UInt64` for n ≤ 64 would remove the factor;
-  the `Splits` API hides the representation, so this changes nothing for callers. Revisit
-  when the first split-matching metric is benchmarked.
+  the `Splits` API hides the representation, so this changes nothing for callers.
+  **Now measured (2026-08-19, CHUNK-011):** `JaccardRobinsonFoulds` against
+  `TreeDist::JaccardRobinsonFoulds` is 4.5× faster at n=10 but 2–7× *slower* by n=1000
+  (`benchmark/results.md`), growing with size — the leading suspect is exactly this
+  `BitVector`-per-pair-score overhead, not the assignment algorithm. Worth doing before
+  CHUNK-012 through CHUNK-015 add more split-matching metrics on top of the same
+  representation.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
