@@ -122,27 +122,41 @@ computations would be worthless.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 15.5 µs | 70.1 µs | 4.5× faster |
-| 50 | 198.6 µs | 101.8 µs | 2.0× slower |
-| 200 | 3.28 ms | 557.2 µs | 5.9× slower |
-| 1000 | 152.6 ms | 21.7 ms | 7.0× slower |
+| 10 | 11.0 µs | 56.5 µs | 5.1× faster |
+| 50 | 110.5 µs | 82.0 µs | 1.3× slower |
+| 200 | 1.29 ms | 465.2 µs | 2.8× slower |
+| 1000 | 56.1 ms | 17.7 ms | 3.2× slower |
 
-Unlike Robinson-Foulds and the quartet distance, this is **not currently a speed win**, and
-the gap widens with tree size. `JaccardRobinsonFoulds` reduces to an assignment problem over
-`O(n)` splits per tree, so the pairwise score matrix and the assignment solver are each
-`O(n²)`–`O(n³)` in the number of splits — but this package builds that matrix with one
-scorer call per cell, allocating a `BitVector` intersection (`count(a .& b)`) each time,
-where TreeDist packs each split into fixed-width machine words and computes the same
-overlap with a handful of masked integer operations. That representational gap, not the
-assignment algorithm, is the leading suspect for the slowdown; CHUNK-010's Open Questions
-already flag `Splits`' `BitVector` representation as the thing to revisit once the first
-split-matching metric was benchmarked; this is that benchmark. Packing splits into `UInt64`
-words for `n ≤ 64` (with a wider-word fallback beyond) would let split intersection and
-Jaccard-count arithmetic run at the same granularity TreeDist's C++ does, and is the
-natural next step if this metric's speed matters for a workload — not attempted in this
-chunk, which prioritized correctness and matching TreeDist's values exactly.
+An earlier version of this benchmark showed a much worse picture — up to 7× slower at
+n=1000, widening rather than narrowing with tree size. Two fixes closed most of that gap.
 
-`agree` in the table below uses a tolerance rather than exact equality, because the two
+**The score matrix was allocating a `BitVector` per cell.** `JaccardRobinsonFoulds` scores
+every pair of the two trees' splits, an `O(n²)` matrix in the split count; building it
+called `count(a .& b)` per cell, and broadcasting `.&` allocates a fresh `BitVector` to hold
+the result before `count` ever runs. Replacing that with a direct population count over the
+two masks' machine-word chunks (`_countand` in `src/generalizedrf.jl`) removed the
+allocation entirely, and hoisting each split's own marked-taxon count out of the `O(n²)`
+loop — it depends on the row or column alone, never on the pair — removed the redundant
+`O(n)` work that came with recomputing it per cell. Together with reusing the assignment
+solver's scratch buffers across rows instead of reallocating them (`src/assignment.jl`),
+this cut allocation at n=1000 from **245 MB to 10 MB**.
+
+**The assignment solver itself was doing far more search than necessary.** Its potentials
+started at zero, so the first attempt at a match for any row began from no information at
+all. Seeding the row potentials from each row's own minimum cost, and processing rows in
+ascending order of that minimum — both valid regardless of starting point or order, since
+neither changes which matching is optimal, only how much work finding it takes — cut the
+number of augmenting-path steps taken on a ~1000-split matching by roughly half. (Column
+reduction, the natural next step for the *square* assignment problem, turned out to be
+unsound here once rows and columns are unequal in count — see the comment above the row
+reduction in `src/assignment.jl` for the case that caught it.)
+
+What is left is close to the assignment solver's inherent cost on this problem: TreeDist's
+C++ solver is genuinely faster per comparison it makes, and closing the remaining gap
+further would mean porting more of Jonker & Volgenant's (1987) preprocessing — the
+"augmenting row reduction" step, not attempted here — rather than removing more overhead.
+
+`agree` in `results.md`'s table uses a tolerance rather than exact equality, because the two
 implementations solve the underlying assignment problem with independently written
 solvers — this package's vendored one over exact `Float64` costs, TreeDist's over costs
 quantized for its integer solver — so the two can differ in the last few significant
