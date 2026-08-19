@@ -103,16 +103,18 @@ end
     end
 end
 
-@testset "row reduction alone, not row-and-column reduction" begin
-    # A regression case for a real bug: seeding both u and v from row-then-column minima
-    # (the standard preprocessing for the *square* assignment problem) is unsound once
-    # n < m, because reducing every column by its minimum across *all* rows can tie
-    # several columns at reduced cost zero for a row purely from what other, unrelated
-    # rows prefer -- not because those columns are equally good choices once only the n
-    # matched columns are counted. The tie-break (first zero found wins) then locked in
-    # column 3 for row 3 here, leaving the true optimum (column 5) unreachable: reported
-    # total 5 against the brute-force optimum 3. Row reduction alone (u only, v left at
-    # zero) does not have this failure mode, since it never touches v.
+@testset "naive column reduction on a rectangular matrix" begin
+    # A regression case from an earlier, simpler solver: seeding potentials from
+    # row-then-column minima computed independently (the standard preprocessing for the
+    # *square* assignment problem) is unsound once n < m, because reducing every column by
+    # its minimum across *all* rows can tie several columns at reduced cost zero for a row
+    # purely from what other, unrelated rows prefer -- not because those columns are
+    # equally good choices once only the n matched columns are counted. A naive "first zero
+    # wins" tie-break locked in column 3 for row 3 here, leaving the true optimum (column
+    # 5) unreachable: reported total 5 against the brute-force optimum 3. The current
+    # solver's column reduction resolves ties correctly (it lets a later, tighter claim on
+    # a row displace an earlier one, rather than keeping whichever was found first), and
+    # gets the right answer.
     cost = [
         1.0 1.0 5.0 3.0 2.0 4.0
         3.0 1.0 5.0 4.0 3.0 2.0
@@ -121,5 +123,24 @@ end
     rowmatch, _, total = _hungarian(cost)
     @test total == 3.0
     @test rowmatch == [1, 2, 5]
+    @test total ≈ _bruteforceassignment(cost)
+end
+
+@testset "a floating-point tie in augmenting row reduction terminates" begin
+    # Two rows here are genuinely tied for the same column's best reduced cost, but after
+    # several potential updates the tie presents as an ulp-scale difference rather than
+    # exact equality. Comparing that as "strictly less" would send the row pair into an
+    # infinite tug-of-war over the column: each "win" tightens the potential by an amount
+    # too small to actually change anything, so the same false signal recurs every time —
+    # which is exactly what _jvstrictlyless's tolerance exists to prevent. This pins that
+    # case as a finite, correct run rather than a hang.
+    cost = [
+        -0.4 -0.8 -0.0 -0.6 -0.6 -0.2
+        -0.6 -0.8 -1.0 -1.0 -0.0 -0.6
+        -0.2 -1.0 -0.2 -0.2 -0.4 -0.4
+        -0.4 -1.0 -0.0 -0.6 -0.6 -0.0
+        -0.0 -0.0 -0.4 -0.0 -1.0 -0.8
+    ]
+    _, _, total = _hungarian(cost)
     @test total ≈ _bruteforceassignment(cost)
 end
