@@ -404,6 +404,33 @@ Produce these live in the MCP Julia session and let them go when it exits.
   number of augmenting-path steps on a ~1000-split matching. Safe to combine freely with
   other row-level preprocessing (like the row reduction above) since neither touches
   correctness, only scheduling.
+- 2026-08-19 (CHUNK-011, later the same day): **Padding a rectangular assignment problem
+  to square with a single repeated value, rather than re-deriving column reduction for the
+  rectangular case directly, sidesteps the ties bullet above entirely** — `_hungarian` now
+  does this before calling `_jvlap`, the full Jonker & Volgenant port. Any single padding
+  value works: the `dim - min(n, m)` padding cells contribute the same total regardless of
+  which real columns/rows end up paired with them, so the optimal square assignment always
+  gives the real rows and columns their best mutual matching first. This is a cleaner fix
+  than the specific counterexample two bullets up suggested was needed (re-deriving dual
+  feasibility for rectangular column reduction) — padding avoids the rectangular case
+  needing separate treatment at all, rather than solving it head-on.
+- 2026-08-19 (CHUNK-011, later the same day): **A successive-shortest-path assignment
+  solver's "strictly less" comparisons need a floating-point tolerance, not just exact
+  `<`, once potentials have accumulated enough updates — and this is a genuine numerical
+  fact about the algorithm, not a workaround for any one implementation's choices.** Two
+  rows genuinely tied for the same column's best reduced cost can end up differing by a
+  single ulp after several potential updates; comparing that as "strictly less" (in
+  Jonker & Volgenant's augmenting row reduction specifically) sent the pair into an
+  infinite tug-of-war over the column, each "win" tightening a potential by an amount too
+  small to change anything next time. TreeDist's C++ solver already guards this exact
+  comparison (`nontrivially_less_than`) — this plan had assumed, without checking, that
+  the guard existed only because TreeDist quantizes its costs to scaled integers; it does
+  not, and any exact-`Float64` port needs the same guard for the same reason. Caught by
+  this package's own brute-force test suite as a hang (not a wrong answer) on a 5×6 case,
+  now a permanent regression test (`test/test_assignment.jl`). Worth remembering for any
+  future numerical algorithm ported from a reference implementation: a tolerance-looking
+  comparison in the reference is a claim about the *algorithm*, not necessarily about the
+  reference's specific numeric representation, until checked.
 
 ## Chunks
 
@@ -1165,6 +1192,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-19 CHUNK-018 (quartet-distance-fast) → next: CHUNK-010
 - 2026-08-19 CHUNK-010 (split-matching-framework), CHUNK-011 (nye-similarity-and-jrf) → next: CHUNK-012
 - 2026-08-19 CHUNK-011 performance follow-up (assignment solver + score matrix) → next: CHUNK-012
+- 2026-08-19 CHUNK-011 assignment solver replaced with full Jonker-Volgenant → next: CHUNK-012
 
 ## Open Questions
 
@@ -1187,11 +1215,29 @@ Produce these live in the MCP Julia session and let them go when it exits.
   steps needed. Net result: 5.1× faster at n=10, and only 1.3×/2.8×/3.2× slower at
   n=50/200/1000 — see `benchmark/README.md` for the full account, including a real
   correctness bug (unsound column reduction for the rectangular case) that a brute-force
-  test caught before it shipped. What remains of the gap is the assignment solver's
-  inherent cost; closing it further would mean porting Jonker & Volgenant's (1987)
-  "augmenting row reduction" preprocessing, not attempted here. Packing splits into
-  `UInt64` words remains a separate, not-yet-measured idea, worth revisiting once more
-  split-matching metrics (CHUNK-012 onward) exist to benchmark together.
+  test caught before it shipped.
+
+  **Resolved further (2026-08-19, same day):** the row-reduction-and-ordering heuristic
+  above was replaced with a full port of Jonker & Volgenant's (1987) published algorithm —
+  the same one TreeDist's C++ implements (`_jvlap`, `src/assignment.jl`). This was **not
+  primarily a speed change** and should not be read as one: on this package's
+  split-matching workload it lands within a few percent of the heuristic it replaced
+  (5.4×/1.3×/2.6×/2.8× at n=10/50/200/1000, essentially unchanged from before), because the
+  earlier heuristic was already close to the assignment solver's inherent cost on this kind
+  of matrix. The reason to make the change was correctness-by-construction — a
+  well-specified published algorithm rather than an ad hoc approximation — and it earned
+  its place by finding a real bug: two rows genuinely tied for a column's best reduced cost
+  can, after enough potential updates, present as differing by one floating-point ulp
+  rather than exactly, and treating that as "strictly less" sent the pair into an infinite
+  tug-of-war over the column. The fix (`_jvstrictlyless`, a tolerance-scaled comparison)
+  mirrors a guard TreeDist's own solver already carries for the same reason — which this
+  plan had earlier (wrongly) assumed was specific to TreeDist's integer-quantized costs,
+  not a real floating-point degeneracy any exact-arithmetic port needs too. Caught by this
+  package's own brute-force test suite as a hang, not a wrong answer, before it shipped.
+
+  Packing splits into `UInt64` words remains a separate, not-yet-measured idea, worth
+  revisiting once more split-matching metrics (CHUNK-012 onward) exist to benchmark
+  together.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
