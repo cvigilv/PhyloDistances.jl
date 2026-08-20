@@ -36,11 +36,22 @@ function _hungarian(cost::AbstractMatrix{<:Real})
     # holds for *any* single padding value, not just a large one — using the matrix's own
     # maximum keeps every entry on a comparable scale to the real costs, positive or
     # negative, rather than presuming a "large" constant is large enough.
-    padvalue = maximum(fcost)
-    padded = fill(padvalue, dim, dim)
-    @views padded[1:nr, 1:nc] .= fcost
+    #
+    # An already-square problem needs none of it, and `_jvlap` only reads its argument, so
+    # the square case hands the caller's matrix straight through. Two trees on the same
+    # taxa usually carry the same number of splits, which makes that the common case here
+    # and the padded copy the largest single allocation the metric would otherwise make.
+    padded = if nr == nc
+        fcost
+    else
+        p = fill(maximum(fcost), dim, dim)
+        @views p[1:nr, 1:nc] .= fcost
+        p
+    end
 
-    rowsol, colsol = _jvlap(padded, dim)
+    # `_jvlap` reads its argument transposed, so it solves the problem whose rows are this
+    # matrix's columns; its two results come back in the opposite order.
+    colsol, rowsol = _jvlap(padded, dim)
 
     rowmatch = zeros(Int, nr)
     for i in 1:nr
@@ -68,12 +79,14 @@ _asfloat(cost::AbstractMatrix{Float64}) = cost
 _asfloat(cost::AbstractMatrix{<:Real}) = float.(cost)
 
 # The smallest value in column `j` of a `dim x dim` cost matrix and the (first, on ties)
-# row that attains it.
+# row that attains it. This is the one scan that runs against the storage order — see
+# `_jvlap` on why the matrix is held transposed — and it is also the only one that visits
+# every entry exactly once, rather than once per augmenting path.
 function _jvcolmin(cost::AbstractMatrix{Float64}, j::Int, dim::Int)
-    minval = cost[1, j]
+    minval = cost[j, 1]
     imin = 1
     for i in 2:dim
-        c = cost[i, j]
+        c = cost[j, i]
         if c < minval
             minval = c
             imin = i
@@ -82,17 +95,17 @@ function _jvcolmin(cost::AbstractMatrix{Float64}, j::Int, dim::Int)
     return minval, imin
 end
 
-# The two smallest values of `cost[i, j] - v[j]` over every column `j`, and the column
+# The two smallest values of `cost[j, i] - v[j]` over every column `j`, and the column
 # attaining each. Augmenting row reduction (below) needs the runner-up as well as the
 # best, to tell a column that is uniquely best for this row from one that is merely tied
 # for best.
 function _jvrowsubmin(cost::AbstractMatrix{Float64}, i::Int, v::Vector{Float64}, dim::Int)
     j1 = 1
-    umin = cost[i, 1] - v[1]
+    umin = cost[1, i] - v[1]
     usubmin = Inf
     j2 = 0
     for j in 2:dim
-        h = cost[i, j] - v[j]
+        h = cost[j, i] - v[j]
         if h < umin
             usubmin = umin
             j2 = j1
@@ -121,12 +134,20 @@ end
 _jvstrictlyless(a::Float64, b::Float64) = a < b - 8 * eps(max(abs(a), abs(b), 1.0))
 
 """
-    _jvlap(cost::Matrix{Float64}, dim::Int) -> (rowsol, colsol)
+    _jvlap(cost::AbstractMatrix{Float64}, dim::Int) -> (rowsol, colsol)
 
 The optimal assignment on a `dim x dim` cost matrix: `rowsol[i]` is the column matched to
 row `i` and `colsol[j]` is the row matched to column `j`, a mutually consistent bijection
 on `1:dim`. Every row and column is matched — there is no rectangular "leftover" here,
 that is handled by `_hungarian`'s caller, which pads to reach this shape.
+
+`cost` is held **transposed**: `cost[j, i]` is the cost of matching row `i` to column `j`.
+Every phase after column reduction scans one row against all `dim` columns, so this puts
+the scans down a column of storage, where Julia keeps consecutive elements. Reading a row
+of a `Matrix` instead strides by `dim` elements, which at a thousand splits is a fresh
+cache line per entry. An assignment problem and its transpose have the same solution with
+the two sides exchanged, so a caller holding the natural orientation passes its matrix
+unaltered and swaps the two results.
 
 Jonker & Volgenant (1987), *A shortest augmenting path algorithm for dense and sparse
 linear assignment problems*, Computing 38: 325–340. Column reduction greedily claims each
@@ -140,7 +161,7 @@ candidate columns into settled and frontier sets rather than rescanning all of t
 every step). `0` is this package's "unmatched" sentinel throughout, standing in for the
 reference algorithm's `-1`.
 """
-function _jvlap(cost::Matrix{Float64}, dim::Int)
+function _jvlap(cost::AbstractMatrix{Float64}, dim::Int)
     v = Vector{Float64}(undef, dim)
     rowsol = zeros(Int, dim)
     colsol = zeros(Int, dim)
@@ -183,7 +204,7 @@ function _jvlap(cost::Matrix{Float64}, dim::Int)
             mincost = Inf
             for j in 1:dim
                 j == j1 && continue
-                rc = cost[i, j] - v[j]
+                rc = cost[j, i] - v[j]
                 rc < mincost && (mincost = rc)
             end
             v[j1] -= mincost
@@ -244,7 +265,7 @@ function _jvlap(cost::Matrix{Float64}, dim::Int)
     for f in 1:numfree
         free_row = freeunassigned[f]
         for j in 1:dim
-            d[j] = cost[free_row, j] - v[j]
+            d[j] = cost[j, free_row] - v[j]
             pred[j] = free_row
             cl[j] = j
         end
@@ -287,10 +308,10 @@ function _jvlap(cost::Matrix{Float64}, dim::Int)
                 j1 = cl[low]
                 low += 1
                 i = colsol[j1]
-                h = cost[i, j1] - v[j1] - min_
+                h = cost[j1, i] - v[j1] - min_
                 for k in up:dim
                     j = cl[k]
-                    v2 = cost[i, j] - v[j] - h
+                    v2 = cost[j, i] - v[j] - h
                     if v2 < d[j]
                         pred[j] = i
                         if v2 == min_
