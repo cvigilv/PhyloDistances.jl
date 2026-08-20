@@ -431,6 +431,22 @@ Produce these live in the MCP Julia session and let them go when it exits.
   future numerical algorithm ported from a reference implementation: a tolerance-looking
   comparison in the reference is a claim about the *algorithm*, not necessarily about the
   reference's specific numeric representation, until checked.
+- 2026-08-20 (CHUNK-033 scoping): **`InfoRobinsonFoulds` does not go through the
+  assignment/matching framework (CHUNK-010) at all**, despite appearing in TreeDist's
+  `R/tree_distance_rf.R` next to the true generalized-RF family. Read from
+  `src/tree_distances.cpp::robinson_foulds_info`: a split from tree 1 either occurs
+  identically (or as its complement) in tree 2 or it doesn't — a bijective, no-ambiguity
+  relationship, the same one classic Robinson-Foulds (CHUNK-006) already computes via set
+  intersection — so there is no partial-overlap scoring for the LAP solver to optimize
+  over. The distance is `SplitwiseInfo(tree1) + SplitwiseInfo(tree2) - 2 * (info content
+  of the splits shared identically between the two trees)`, structurally identical to
+  `RobinsonFoulds`'s own `nSplits1 + nSplits2 - 2*sharedSplits`, with each split's
+  contribution weighted by its phylogenetic information content (`lg2_unrooted(n) -
+  lg2_rooted(k) - lg2_rooted(n-k)`, `k` = the split's smaller-side size) instead of
+  counted as 1. Consequence: CHUNK-033 depends only on CHUNK-013 (the information
+  primitives) and reuses `Splits`'s existing `intersect`, not CHUNK-010's solver — the
+  "generalized RF" grouping in TreeDist's file layout is not a reliable guide to which
+  metrics need the assignment framework in this package.
 
 ## Chunks
 
@@ -780,7 +796,13 @@ Produce these live in the MCP Julia session and let them go when it exits.
 
      CHUNK-009 and CHUNK-032 are deferred together: the branch-length metrics have no
      reference implementation until phangorn is installed, so CHUNK-032 should precede
-     CHUNK-009 whenever that track is taken up. -->
+     CHUNK-009 whenever that track is taken up.
+
+     Re-prioritized 2026-08-20, at the user's request: **CHUNK-013, then CHUNK-033**, ahead
+     of CHUNK-012/014/015. CHUNK-033 (information-corrected Robinson-Foulds) is the metric
+     the user needs next; CHUNK-013 is its only unmet dependency (CHUNK-010 is complete but,
+     per Working knowledge below, turns out not to be needed for this particular metric).
+     CHUNK-012/014/015 are unaffected and can be picked up in any order afterward. -->
 
 ### CHUNK-009: branch-score-distance
 - **Description**: Kuhner-Felsenstein branch-score distance: the Euclidean distance
@@ -899,14 +921,40 @@ Produce these live in the MCP Julia session and let them go when it exits.
   proportion of trees containing it), the clustering entropy of a split treated as a
   two-class partition, and the mutual information / joint entropy of a pair of splits.
   Includes the double-factorial tree-count machinery and its overflow-safe log form.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-004
 - **Verification strategy**: Analytical checks — the number of unrooted binary trees on n
   tips matches the known double-factorial sequence; entropy of a balanced split equals
   1 bit; mutual information of a split with itself equals its entropy; all quantities
   non-negative and finite for n up to at least 1000 (overflow guard).
-- **Notes**: Document the log base used (bits vs nats) once, here, and be consistent
-  across every downstream metric — this is a common source of published-value mismatches.
+- **Notes**: Lives in `src/information.jl`. `public`, unexported: `log2rooted`,
+  `log2unrooted`, `splitinfo`, `clusteringentropy`, `mutualinformation`, `jointentropy`.
+  All in **bits** (log base 2), matching TreeDist throughout — there is only one base in
+  use across this package, so no metric needs to convert.
+
+  `log2rooted(n)`/`log2unrooted(n)` are a running sum of `log2(2j-3)` terms (verified
+  bitwise-equivalent to TreeDist's closed-form `lgamma` fallback, `R/tree_distance_rf.R`
+  and `inst/include/TreeDist/mutual_clustering_impl.h`, for `m` up to 7 against the known
+  double-factorial sequence), **not** a precomputed table — TreeDist tables these up to 64
+  tips because it is called inside a tight per-pair, per-split loop; this package has no
+  such loop yet, so a table was deferred rather than built speculatively. Revisit once
+  CHUNK-033 (or CHUNK-014/015) profiling shows it matters — see Open Questions.
+
+  `splitinfo`, `clusteringentropy` and `mutualinformation` port
+  `robinson_foulds_info`/`ic_matching`'s per-split formula, `binary_entropy_counts.cpp`,
+  and `mutual_clustering_impl.h`'s contingency-table sum respectively (all read from
+  TreeDist 2026-08-20; see Working knowledge for the exact correspondence).
+  `mutualinformation` divides the extensive contingency-table sum by `n`, converting it to
+  the same per-taxon scale as `clusteringentropy`, which is what makes `jointentropy =
+  H₁ + H₂ - MI` correct on that shared scale — confirmed by testing `mutualinformation(m,
+  m) ≈ clusteringentropy(m)` and MI's symmetry and non-negativity over 2,000 random mask
+  pairs, not just hand-picked cases.
+
+  **A trivial split carries exactly zero phylogenetic information for any `n`** —
+  `splitinfo(1, n) ≈ 0` follows algebraically from the `log2rooted` recurrence and is
+  pinned as a test at `n = 3, 5, 8, 100, 1000`, since it is the structural fact that
+  justifies CHUNK-004 excluding trivial splits from topology metrics: they carry no
+  information to lose.
 
 ### CHUNK-014: clustering-information-metrics
 - **Description**: Mutual clustering information (MCI) and the clustering information
@@ -1024,7 +1072,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
   convention against it.
 - **Status**: `not-started`
 - **Depends on**: CHUNK-009, CHUNK-011, CHUNK-012, CHUNK-014, CHUNK-015, CHUNK-017,
-  CHUNK-019, CHUNK-020, CHUNK-028, CHUNK-029, CHUNK-030, CHUNK-031
+  CHUNK-019, CHUNK-020, CHUNK-028, CHUNK-029, CHUNK-030, CHUNK-031, CHUNK-033
 - **Verification strategy**: Tests pass on a clean machine with no R installation and no
   network access.
 - **Notes**: This is the project's central reproducibility artifact. Any metric
@@ -1178,6 +1226,30 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `R_MAKEVARS_USER` treatment as TreeDist. Also settle here whether trivial splits belong in
   each metric, and whether the normalizers chosen without a reference are the right ones.
 
+### CHUNK-033: info-robinson-foulds
+- **Description**: Information-corrected Robinson-Foulds (TreeDist's
+  `InfoRobinsonFoulds`): the RF family member that weights each split by its
+  phylogenetic information content rather than counting it as 1. Splits are matched by
+  exact identity between the two trees (a split either occurs in both or it doesn't) —
+  the same symmetric-difference relationship CHUNK-006 already computes for classic RF —
+  not by an optimal assignment. Distance is
+  `SplitwiseInfo(tree1) + SplitwiseInfo(tree2) - 2 * (info content of the shared splits)`,
+  where `SplitwiseInfo` is the sum, over a tree's non-trivial splits, of the CHUNK-013
+  self-information quantity. Normalized against the sum of both trees'
+  `SplitwiseInfo`, mirroring `RobinsonFoulds`'s own normalizer pattern (split count ->
+  information content).
+- **Status**: `not-started`
+- **Depends on**: CHUNK-013
+- **Verification strategy**: Identical trees -> 0; a tree against a star tree -> its full
+  `SplitwiseInfo`; hand-computed value for a small tree pair using CHUNK-013's per-split
+  information formula; agreement with `TreeDist::InfoRobinsonFoulds` (source read
+  2026-08-20: `R/tree_distance_rf.R`, `src/tree_distances.cpp::robinson_foulds_info`).
+- **Notes**: See the 2026-08-20 Working knowledge entry — this metric does **not** go
+  through CHUNK-010's assignment framework despite living in TreeDist's "generalized RF"
+  file alongside JRF/Nye/MCI/CID/SPI. Implement it as a direct extension of CHUNK-006's
+  split-intersection logic (`Splits`'s `intersect`), weighted by CHUNK-013's per-split
+  information content, rather than as a CHUNK-010 scorer.
+
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
 
@@ -1193,6 +1265,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-19 CHUNK-010 (split-matching-framework), CHUNK-011 (nye-similarity-and-jrf) → next: CHUNK-012
 - 2026-08-19 CHUNK-011 performance follow-up (assignment solver + score matrix) → next: CHUNK-012
 - 2026-08-19 CHUNK-011 assignment solver replaced with full Jonker-Volgenant → next: CHUNK-012
+- 2026-08-20 CHUNK-013 (split-information-primitives) → next: CHUNK-033
 
 ## Open Questions
 
@@ -1279,6 +1352,14 @@ Produce these live in the MCP Julia session and let them go when it exits.
   clustering — will not accept them as things stand. Decide per metric whether to subtype
   `Distances.Metric` directly once each is implemented and its properties are established
   (CHUNK-021 tests the axioms). Changing this after release is breaking.
+- **`log2rooted`/`log2unrooted` recompute their running sum from scratch on every call**,
+  so summing the phylogenetic information content of every split in an n-taxon tree
+  (needed by CHUNK-033's `SplitwiseInfo`-equivalent, and later by CHUNK-014/015/020/030/
+  031) costs `O(n²)` rather than the `O(n)` a precomputed table gives — the same
+  naive-first, optimize-once-measured pattern CHUNK-006 followed for Robinson-Foulds
+  (naive split comparison, then Day's cluster-table algorithm once profiling justified
+  it). Not addressed in CHUNK-013 since nothing yet calls it in a loop. Revisit once
+  CHUNK-033 or the benchmark suite shows it costs something real.
 - **Warning noise in the test suite.** A full run prints roughly 400 uncaptured
   "defined on unrooted trees but the ... tree is rooted" warnings, from randomized cases in
   `test/test_robinsonfoulds.jl` that exercise rooted inputs without wrapping the call in
