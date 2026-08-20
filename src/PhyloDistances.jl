@@ -57,7 +57,7 @@ export readnw
 public branchlength, clusteringentropy, convention, incidencematrix, isnormalized,
     isrooted, issimilarity, istrivial, jointentropy, log2rooted, log2unrooted,
     mutualinformation, nni!, normalization, normalizer, normalizerinfo, requiresrooted,
-    splitinfo, splitmatching, taxonlabel, taxonlabels
+    SplitInfoTable, splitinfo, splitmatching, taxonlabel, taxonlabels
 
 include("taxa.jl")
 include("random.jl")

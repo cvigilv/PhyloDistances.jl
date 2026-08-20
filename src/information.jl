@@ -46,6 +46,9 @@ A split shared by every tree on the same taxa — one side holding a single taxo
 trivial split — carries exactly zero information, for any `n`; passing a `mask` gives `k`
 and `n` as `count(mask)` and `length(mask)`.
 
+Each call sums the [`log2rooted`](@ref) recurrence from scratch, which costs `O(n)`. Use a
+[`SplitInfoTable`](@ref) instead to sum information content over a whole split set.
+
 Thorley, J.L., Wilkinson, M. and Charleston, M. (1998). *The information content of
 consensus trees.* In Advances in Data Science and Classification, 91–98. Springer.
 """
@@ -55,6 +58,102 @@ function splitinfo(k::Integer, n::Integer)
 end
 
 splitinfo(mask::AbstractVector{Bool}) = splitinfo(count(mask), length(mask))
+
+"""
+    SplitInfoTable(n)
+
+[`log2rooted`](@ref) evaluated at every leaf count from `0` to `n`, so that
+[`splitinfo`](@ref) costs three array lookups instead of a running sum.
+
+`log2rooted(k)` accumulates `k` logarithms, so adding up the information content of an
+`n`-taxon tree's roughly `n` splits one call at a time costs `O(n²)`. The table is one
+`O(n)` pass over that same recurrence, in the same order from the same starting value, so a
+tabulated result is bitwise identical to what the single-argument form returns — switching
+a metric over changes its cost, never its answer.
+
+A table answers only for splits over the `n` taxa it was built for:
+
+```julia
+table = SplitInfoTable(length(index))
+total = sum(mask -> splitinfo(table, mask), splits(tree, index); init = 0.0)
+```
+
+See [`log2rooted`](@ref) and [`splitinfo`](@ref) for the one-off case, which stays the
+cheaper choice when a single value is wanted.
+"""
+struct SplitInfoTable
+    rooted::Vector{Float64}
+    unrooted::Float64
+end
+
+function SplitInfoTable(n::Integer)
+    n < 0 && throw(ArgumentError("SplitInfoTable is undefined for negative n, got $n"))
+
+    # A prefix scan of log2rooted's own loop: rooted[j + 1] holds log2rooted(j), and each
+    # partial sum is formed by the same addition in the same order, so the two agree bit
+    # for bit rather than merely to tolerance.
+    rooted = zeros(Float64, n + 1)
+    total = 0.0
+    for j in 2:n
+        total += log2(2j - 3)
+        rooted[j + 1] = total
+    end
+
+    return SplitInfoTable(rooted, log2unrooted(n))
+end
+
+_ntaxa(table::SplitInfoTable) = length(table.rooted) - 1
+
+Base.show(io::IO, table::SplitInfoTable) =
+    print(io, "SplitInfoTable(", _ntaxa(table), ")")
+
+"""
+    log2rooted(table::SplitInfoTable, k) -> Float64
+
+[`log2rooted`](@ref)`(k)` read from a [`SplitInfoTable`](@ref), for `k` no larger than the
+leaf count the table was built for.
+"""
+function log2rooted(table::SplitInfoTable, k::Integer)
+    n = _ntaxa(table)
+    (0 <= k <= n) || throw(ArgumentError(
+        "log2rooted needs 0 <= k <= n, got k=$k from a table built for n=$n"
+    ))
+    return table.rooted[k + 1]
+end
+
+"""
+    log2unrooted(table::SplitInfoTable) -> Float64
+
+[`log2unrooted`](@ref) at the leaf count a [`SplitInfoTable`](@ref) was built for.
+"""
+log2unrooted(table::SplitInfoTable) = table.unrooted
+
+"""
+    splitinfo(table::SplitInfoTable, k) -> Float64
+    splitinfo(table::SplitInfoTable, mask::AbstractVector{Bool}) -> Float64
+
+[`splitinfo`](@ref) for a split separating `k` of a [`SplitInfoTable`](@ref)'s taxa from
+the rest, in constant time.
+
+A `mask` supplies `k` as `count(mask)`, and must span the table's taxa: unlike the
+two-argument form it takes no `n` of its own, so a mask over a different taxon set is
+rejected rather than silently answered for the wrong tree size.
+"""
+function splitinfo(table::SplitInfoTable, k::Integer)
+    n = _ntaxa(table)
+    (0 <= k <= n) || throw(ArgumentError(
+        "splitinfo needs 0 <= k <= n, got k=$k from a table built for n=$n"
+    ))
+    return table.unrooted - table.rooted[k + 1] - table.rooted[n - k + 1]
+end
+
+function splitinfo(table::SplitInfoTable, mask::AbstractVector{Bool})
+    length(mask) == _ntaxa(table) || throw(DimensionMismatch(
+        "splitinfo needs a mask over the table's taxa: got a mask of length " *
+        "$(length(mask)) from a table built for n=$(_ntaxa(table))"
+    ))
+    return splitinfo(table, count(mask))
+end
 
 """
     clusteringentropy(k, n) -> Float64

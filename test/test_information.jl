@@ -1,6 +1,6 @@
 using PhyloDistances
 using PhyloDistances: clusteringentropy, jointentropy, log2rooted, log2unrooted,
-    mutualinformation, splitinfo
+    mutualinformation, SplitInfoTable, splitinfo
 using Random
 using Test
 
@@ -43,6 +43,40 @@ end
 
     @test_throws "0 <= k <= n" splitinfo(-1, 5)
     @test_throws "0 <= k <= n" splitinfo(6, 5)
+end
+
+@testset "SplitInfoTable" begin
+    # The table is a cost optimization only, so every value must match the per-call form
+    # exactly -- === rather than ≈, which also pins -0.0 against 0.0 and NaN against NaN.
+    for n in (0, 1, 2, 3, 5, 8, 64, 200, 1000)
+        table = SplitInfoTable(n)
+        @test log2unrooted(table) === log2unrooted(n)
+        @test all(k -> log2rooted(table, k) === log2rooted(k), 0:n)
+        @test all(k -> splitinfo(table, k) === splitinfo(k, n), 0:n)
+    end
+
+    table = SplitInfoTable(5)
+    @test splitinfo(table, BitVector([0, 1, 1, 0, 0])) === splitinfo(2, 5)
+    @test string(table) == "SplitInfoTable(5)"
+
+    @test_throws "negative" SplitInfoTable(-1)
+    @test_throws "0 <= k <= n" splitinfo(table, -1)
+    @test_throws "0 <= k <= n" splitinfo(table, 6)
+    @test_throws "0 <= k <= n" log2rooted(table, 6)
+
+    # A mask over the wrong taxon set would otherwise be answered for the wrong tree size.
+    @test_throws DimensionMismatch splitinfo(table, BitVector([0, 1, 1, 0]))
+
+    # Summing a real tree's splits is where the table is meant to be used, and where a
+    # difference from the per-call form would show up as a drifting total rather than a
+    # single wrong lookup.
+    rng = Random.Xoshiro(20260820)
+    for n in (6, 30, 200)
+        s = splits(randomtree(rng, n))
+        tbl = SplitInfoTable(n)
+        @test sum(mask -> splitinfo(tbl, mask), s; init = 0.0) ===
+            sum(splitinfo, s; init = 0.0)
+    end
 end
 
 @testset "clusteringentropy" begin

@@ -142,16 +142,21 @@ end
 InfoRobinsonFoulds(; convention = TreeDistConvention(), normalize = false) =
     InfoRobinsonFoulds(Convention(convention), normalize)
 
-# A tree's total split information -- TreeDist's `SplitwiseInfo`, which is both this
-# metric's own scale and its normalizer.
-_splitwiseinfo(s::Splits) = sum(splitinfo, s; init = 0.0)
+# A split set's total information -- TreeDist's `SplitwiseInfo` when handed a whole tree's
+# splits, which is both this metric's own scale and its normalizer. One table serves every
+# split of a comparison, so the sum costs O(n) rather than O(n) per split.
+_splitwiseinfo(table::SplitInfoTable, masks) =
+    sum(mask -> splitinfo(table, mask), masks; init = 0.0)
 
 function _compare(::InfoRobinsonFoulds, ::Convention, t1, t2)
     index = taxonindex(t1, t2)
     s1, s2 = splits(t1, index), splits(t2, index)
-    sharedinfo = sum(splitinfo, intersect(s1, s2); init = 0.0)
-    return _splitwiseinfo(s1) + _splitwiseinfo(s2) - 2 * sharedinfo
+    table = SplitInfoTable(length(index))
+    return _splitwiseinfo(table, s1) + _splitwiseinfo(table, s2) -
+           2 * _splitwiseinfo(table, intersect(s1, s2))
 end
 
-normalizerinfo(::InfoRobinsonFoulds, ::Convention, tree) =
-    _splitwiseinfo(splits(tree, taxonindex(tree)))
+function normalizerinfo(::InfoRobinsonFoulds, ::Convention, tree)
+    index = taxonindex(tree)
+    return _splitwiseinfo(SplitInfoTable(length(index)), splits(tree, index))
+end

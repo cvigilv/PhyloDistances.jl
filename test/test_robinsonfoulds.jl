@@ -235,6 +235,25 @@ end
         @test InfoRobinsonFoulds()(tree, other) == InfoRobinsonFoulds()(other, tree)
     end
 
+    @testset "the tabulated sum is the per-call sum, bitwise" begin
+        # The metric reads split information from one table per comparison; summing
+        # splitinfo a call at a time is the same arithmetic at O(n) per split, so the two
+        # must agree exactly and not merely to tolerance, at any tree size.
+        function irf_percall(t1, t2)
+            index = taxonindex(t1, t2)
+            s1, s2 = splits(t1, index), splits(t2, index)
+            return sum(splitinfo, s1; init = 0.0) + sum(splitinfo, s2; init = 0.0) -
+                   2 * sum(splitinfo, intersect(s1, s2); init = 0.0)
+        end
+
+        rng = Xoshiro(20260820)
+        for n in (8, 50, 200)
+            t1 = randomtree(rng, n)
+            t2 = perturb(rng, t1, n ÷ 2)
+            @test InfoRobinsonFoulds()(t1, t2) === irf_percall(t1, t2)
+        end
+    end
+
     @testset "normalization" begin
         t1, t2 = readnw("(A,B,((C,D),E));"), readnw("(A,B,((C,E),D));")
         expected = normalizerinfo(InfoRobinsonFoulds(), TreeDistConvention(), t1) +
