@@ -1,8 +1,8 @@
 # Benchmarks
 
 Compares this package against the R packages whose values it reproduces —
-[TreeDist](https://github.com/ms609/TreeDist) for Robinson-Foulds and
-Jaccard-Robinson-Foulds, and [Quartet](https://github.com/ms609/Quartet) for the quartet
+[TreeDist](https://github.com/ms609/TreeDist) for Robinson-Foulds, Jaccard-Robinson-Foulds
+and Info-Robinson-Foulds, and [Quartet](https://github.com/ms609/Quartet) for the quartet
 distance — so that agreeing on results does not quietly cost an order of magnitude in
 speed.
 
@@ -13,8 +13,9 @@ $ julia --project=benchmark benchmark/run.jl
 ```
 
 `run.jl` writes Newick files to `benchmark/trees/`, benchmarks this package, invokes
-`treedist.R` and `quartet.R` on the same files, and renders `results.md`. R is optional —
-without a working `Rscript` the Julia timings are reported alone.
+`treedist.R`, `quartet.R`, `jrf.R` and `inforf.R` on the same files, and renders
+`results.md`. R is optional — without a working `Rscript` the Julia timings are reported
+alone.
 
 **A full run takes well under a minute** on the Julia side; most of the wall clock goes to R,
 repeating its calls until the clock's resolution stops mattering.
@@ -167,3 +168,31 @@ quantized for its integer solver — so the two can differ in the last few signi
 digits even when both found the true optimum. See `validation/crosscheck.jl`'s
 `_closeenough` and its validation report for the correctness case; this section is about
 speed only.
+
+### Info-Robinson-Foulds
+
+| taxa | PhyloDistances | TreeDist | ratio |
+|-----:|---------------:|---------:|------:|
+| 10 | 13.0 µs | 130.2 µs | 10.0× faster |
+| 50 | 158.6 µs | 318.1 µs | 2.0× faster |
+| 200 | 1.94 ms | 1.12 ms | 1.7× slower |
+| 1000 | 44.03 ms | 7.92 ms | 5.6× slower |
+
+`InfoRobinsonFoulds` weights each split by its phylogenetic information content instead of
+counting it as one, but — unlike Jaccard-Robinson-Foulds — matches splits by exact identity,
+the same relationship classic Robinson-Foulds already computes as a symmetric-difference
+intersection. There is no assignment solve here at all, so the crossover to slower-than-
+TreeDist between n=50 and n=200 has a different cause than Jaccard-Robinson-Foulds's does.
+
+**The likely cause is `log2rooted`/`log2unrooted` recomputing their running sum from
+scratch on every call**, rather than the split intersection itself. Each of an n-taxon
+tree's `~n` splits calls `splitinfo`, which walks a fresh `O(n)` loop, so summing a tree's
+own split information (`SplitwiseInfo`, computed twice per comparison — once per tree) costs
+`O(n²)` even though nothing else in this metric does. TreeDist tables these values up to 64
+tips for exactly this reason (see the plan's Working knowledge). The degradation is steeper
+here than Jaccard-Robinson-Foulds's own — 5.6× slower at n=1000 against 2.8× — despite doing
+strictly less work per pair, which is the signature of a missing table rather than of
+anything intrinsic to matching splits by identity. `agree` uses a tolerance rather than
+exact equality only because TreeDist floors its result near zero
+(`.FloorNumericalNoise`), not because either side solves an optimization differently — see
+`validation/crosscheck.jl`.
