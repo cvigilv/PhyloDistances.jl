@@ -23,6 +23,26 @@ repeating its calls until the clock's resolution stops mattering.
 Neither side's timing includes parsing. `benchmark/trees/` and the `results_*_r.tsv` files
 are regenerated on every run and are not tracked; `results.md` is.
 
+### The taxon ramp
+
+```console
+$ julia --project=benchmark benchmark/rampbench.jl
+```
+
+`rampbench.jl` does the same thing for the two split-matching metrics and the quartet
+distance at 16, 64, 256 and 1024 taxa, writing its trees to `benchmark/ramptrees/`, calling
+`rampbench.R`, and rendering `ramp.md`. It also leaves both sides' numbers in
+`results_ramp_julia.tsv` and `results_ramp_r.tsv`, which are the files to keep a copy of
+before a change and compare a later run against; the trees come from a fixed seed, so two
+runs measure the same work.
+
+The sizes are powers of two on purpose, which is the whole reason it exists next to
+`run.jl` rather than inside it. Anything laid out as an `n × n` table and read at scattered
+`[x, y]` — the quartet distance's most-recent-common-ancestor intervals, for one — collides
+in the cache when its leading dimension is a power of two, and `run.jl`'s round sizes never
+land on one. A ramp that does is what turns that class of problem from invisible into a
+ratio that moves.
+
 Memory is measured differently on each side and the two figures are **not** comparable.
 Julia reports bytes allocated by the call; R reports the peak its garbage collector saw,
 which includes everything already resident.
