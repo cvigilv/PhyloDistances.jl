@@ -149,8 +149,12 @@ function splits(tree, index::TaxonIndex{L}; trivial::Bool = false) where {L}
     _walksplits!(record!, tree, index, ntaxa)
 
     # Sorting makes the representation a function of the split set alone: two trees with
-    # the same splits iterate them in the same order whatever their shapes.
-    sort!(masks)
+    # the same splits iterate them in the same order whatever their shapes. The order is on
+    # the machine words backing each mask rather than on its bits, for the reason `SplitKey`
+    # hashes them: comparing two `BitVector`s walks them element by element, O(ntaxa) per
+    # comparison. Every mask here spans the same taxa and its words determine it uniquely,
+    # so ordering by them is still a strict total order.
+    sort!(masks; by = mask -> mask.chunks)
 
     return Splits{L}(index, masks, lengths)
 end
