@@ -802,7 +802,19 @@ Produce these live in the MCP Julia session and let them go when it exits.
      of CHUNK-012/014/015. CHUNK-033 (information-corrected Robinson-Foulds) is the metric
      the user needs next; CHUNK-013 is its only unmet dependency (CHUNK-010 is complete but,
      per Working knowledge below, turns out not to be needed for this particular metric).
-     CHUNK-012/014/015 are unaffected and can be picked up in any order afterward. -->
+     CHUNK-012/014/015 are unaffected and can be picked up in any order afterward.
+
+     Re-prioritized again 2026-08-20 (later the same day), after benchmarking CHUNK-033
+     against TreeDist: **CHUNK-034 (split-information-table), then CHUNK-014/015/020/030/
+     031**. CHUNK-033 shipped on CHUNK-013's naive, `O(n)`-per-split `log2rooted`/
+     `log2unrooted`, and the benchmark shows that cost compounding into a real regression
+     at scale (1.7×/5.6× slower than TreeDist at n=200/1000, having been 10.0×/2.0×
+     *faster* at n=10/50) despite the metric doing no assignment solve at all. Every one of
+     CHUNK-014/015/020/030/031 sums the same kind of information-content quantity over a
+     whole split set, so doing CHUNK-034 first means they inherit the `O(n)` path from the
+     start instead of each independently discovering, benchmarking, and then fixing the
+     same `O(n²)` problem CHUNK-033 already found. CHUNK-012 still does not depend on
+     CHUNK-013 at all and remains unaffected by this reordering. -->
 
 ### CHUNK-009: branch-score-distance
 - **Description**: Kuhner-Felsenstein branch-score distance: the Euclidean distance
@@ -1238,17 +1250,80 @@ Produce these live in the MCP Julia session and let them go when it exits.
   self-information quantity. Normalized against the sum of both trees'
   `SplitwiseInfo`, mirroring `RobinsonFoulds`'s own normalizer pattern (split count ->
   information content).
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-013
 - **Verification strategy**: Identical trees -> 0; a tree against a star tree -> its full
   `SplitwiseInfo`; hand-computed value for a small tree pair using CHUNK-013's per-split
   information formula; agreement with `TreeDist::InfoRobinsonFoulds` (source read
   2026-08-20: `R/tree_distance_rf.R`, `src/tree_distances.cpp::robinson_foulds_info`).
-- **Notes**: See the 2026-08-20 Working knowledge entry — this metric does **not** go
-  through CHUNK-010's assignment framework despite living in TreeDist's "generalized RF"
-  file alongside JRF/Nye/MCI/CID/SPI. Implement it as a direct extension of CHUNK-006's
-  split-intersection logic (`Splits`'s `intersect`), weighted by CHUNK-013's per-split
-  information content, rather than as a CHUNK-010 scorer.
+- **Notes**: Lives in `src/robinsonfoulds.jl`, alongside `RobinsonFoulds` rather than in
+  `generalizedrf.jl` — it extends CHUNK-006's split-intersection logic (`Splits`'s
+  `intersect`) directly, not CHUNK-010's assignment framework, confirmed by reading
+  `robinson_foulds_info` in TreeDist's C++ (a plain double loop over both trees' splits
+  matching by identity or complement, not an assignment solve) rather than trusting that
+  it sits in TreeDist's file next to the true generalized-RF family.
+
+  `_splitwiseinfo(s::Splits) = sum(splitinfo, s; init = 0.0)` sums a tree's own non-trivial
+  splits' information content — TreeDist's `SplitwiseInfo`, serving as both this metric's
+  scale and its `normalizerinfo`. `_compare` is `_splitwiseinfo(s1) + _splitwiseinfo(s2) -
+  2 * sum(splitinfo, intersect(s1, s2))`.
+
+  Citation: Smith, M.R. (2020). *Information theoretic Generalized Robinson-Foulds metrics
+  for comparing phylogenetic trees.* Bioinformatics 36(20): 5007–5013, §2.1 — found in
+  TreeDist's `inst/REFERENCES.bib` (`SmithDist`), cited from `R/tree_distance_rf.R`.
+
+  Unlike `WeightedRobinsonFoulds`, a rooted tree matches its unrooted twin **exactly**
+  (bitwise `0.0`, not merely to tolerance): no branch length is summed here, only split
+  identity, so there is no floating-point sum-order hazard to guard against.
+
+  **Validated against TreeDist 2.14.1**: one hand-computed five-taxon pair, plus
+  `validation/crosscheck.jl` extended with `InfoRobinsonFoulds()` and its normalized form —
+  **1,140 generated cases, 0 mismatches**, compared to a tolerance
+  (`atol=1e-9, rtol=1e-6`) rather than bitwise, since TreeDist floors near-zero results
+  (`.FloorNumericalNoise`) in a way this package's formula does not attempt to reproduce
+  bit-for-bit — the same caveat already noted for the Reference implementation section.
+
+  Structural tests beyond the plan's bar: `InfoRobinsonFoulds(t1, t2) == 0` exactly where
+  `RobinsonFoulds(t1, t2) == 0` and strictly positive otherwise, over 20 random
+  tree/perturbation pairs; symmetry; the disjoint-split case (two caterpillars sharing no
+  split) additively sums both trees' `SplitwiseInfo`.
+
+  **Benchmarked against `TreeDist::InfoRobinsonFoulds`** (`benchmark/inforf.R`, added to
+  `benchmark/run.jl`): 10.0×/2.0× faster at n=10/50, then 1.7×/5.6× *slower* at n=200/1000
+  — steeper than `JaccardRobinsonFoulds`'s degradation (2.6×/2.8× slower at the same
+  sizes) despite doing strictly less work per pair. That is the `O(n²)`
+  `log2rooted`/`log2unrooted` recomputation named in CHUNK-013's Open Questions entry,
+  now measured rather than merely anticipated. **Addressed by CHUNK-034**, not by this
+  chunk — see its Description for why the fix belongs in the shared primitive rather than
+  in this metric alone.
+
+### CHUNK-034: split-information-table
+- **Description**: Give every metric that sums [`splitinfo`](@ref) (or
+  [`clusteringentropy`](@ref)/[`mutualinformation`](@ref)) over a whole split set an `O(n)`
+  path instead of the `O(n²)` one CHUNK-013 shipped with. `log2rooted`/`log2unrooted`
+  currently recompute their running sum from scratch on every call, which is fine for a
+  single lookup but means summing information content over an n-taxon tree's `~n` splits —
+  `SplitwiseInfo`, needed by CHUNK-033 and, later, by CHUNK-014/015/020/030/031 — costs
+  `O(n²)`. Add a table-backed form that computes `log2rooted(0), ..., log2rooted(n)` in one
+  `O(n)` pass and looks each value up in `O(1)` thereafter, mirroring what TreeDist does by
+  tabulating up to 64 tips. Keep the existing single-value `log2rooted`/`log2unrooted`/
+  `splitinfo` API exactly as it is — this is an additional path for the whole-split-set case,
+  not a replacement for the one-off case, so nothing downstream needs to change its calling
+  convention. Update `InfoRobinsonFoulds` (CHUNK-033) to use it once it exists, since it is
+  the first metric shown to pay the cost.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-013
+- **Verification strategy**: The table-backed sum agrees exactly (not just to tolerance)
+  with the existing per-call formula, checked over every tree already exercised by
+  CHUNK-033's tests plus random trees up to a few hundred taxa. Re-run
+  `benchmark/inforf.R` after `InfoRobinsonFoulds` switches over; the n=200/1000 crossover
+  to slower-than-TreeDist should move out or close, and the n=10/50 wins should be
+  unaffected or improve, never regress.
+- **Notes**: Motivated by CHUNK-033's benchmark (2026-08-20): `InfoRobinsonFoulds` was
+  10.0×/2.0× faster than TreeDist at n=10/50 but 1.7×/5.6× slower at n=200/1000, a steeper
+  falloff than `JaccardRobinsonFoulds`'s own despite `InfoRobinsonFoulds` doing no
+  assignment solve at all — the signature of a missing table, not of anything intrinsic to
+  matching splits by identity. See `benchmark/README.md`'s "Info-Robinson-Foulds" section.
 
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
@@ -1266,6 +1341,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-19 CHUNK-011 performance follow-up (assignment solver + score matrix) → next: CHUNK-012
 - 2026-08-19 CHUNK-011 assignment solver replaced with full Jonker-Volgenant → next: CHUNK-012
 - 2026-08-20 CHUNK-013 (split-information-primitives) → next: CHUNK-033
+- 2026-08-20 CHUNK-033 (info-robinson-foulds) → next: CHUNK-034
 
 ## Open Questions
 
@@ -1352,14 +1428,27 @@ Produce these live in the MCP Julia session and let them go when it exits.
   clustering — will not accept them as things stand. Decide per metric whether to subtype
   `Distances.Metric` directly once each is implemented and its properties are established
   (CHUNK-021 tests the axioms). Changing this after release is breaking.
-- **`log2rooted`/`log2unrooted` recompute their running sum from scratch on every call**,
-  so summing the phylogenetic information content of every split in an n-taxon tree
-  (needed by CHUNK-033's `SplitwiseInfo`-equivalent, and later by CHUNK-014/015/020/030/
-  031) costs `O(n²)` rather than the `O(n)` a precomputed table gives — the same
-  naive-first, optimize-once-measured pattern CHUNK-006 followed for Robinson-Foulds
-  (naive split comparison, then Day's cluster-table algorithm once profiling justified
-  it). Not addressed in CHUNK-013 since nothing yet calls it in a loop. Revisit once
-  CHUNK-033 or the benchmark suite shows it costs something real.
+- ~~**`log2rooted`/`log2unrooted` recompute their running sum from scratch on every
+  call.**~~ Tracked as CHUNK-034 (2026-08-20) now that it has moved from a theoretical
+  concern to a measured one: `InfoRobinsonFoulds` (CHUNK-033), which sums the
+  phylogenetic information content of every split in an n-taxon tree and so pays this
+  `O(n²)` cost twice per comparison, benchmarked at 10.0×/2.0× faster than
+  `TreeDist::InfoRobinsonFoulds` at n=10/50 but **1.7×/5.6× slower** at n=200/1000 — a
+  steeper falloff than `JaccardRobinsonFoulds`'s own (2.6×/2.8× slower at the same sizes)
+  despite doing strictly less work per pair, no assignment solve at all. See
+  `benchmark/README.md`'s "Info-Robinson-Foulds" section and CHUNK-034's own entry for
+  the fix (a precomputed table, the same naive-first, optimize-once-measured pattern
+  CHUNK-006 followed for Robinson-Foulds) and why it is sequenced ahead of
+  CHUNK-014/015/020/030/031, which would otherwise inherit the same ceiling.
+- **`validation/README.md` overstates exactness.** Its opening paragraph and "R must be the
+  one the packages were built for" section describe the crosscheck as comparing everything
+  "exactly" / "bitwise, no tolerance", which was true when only `RobinsonFoulds` and
+  `QuartetDistance` existed (CHUNK-006/007) but has been wrong since CHUNK-011 added
+  `NyeSimilarity`/`JaccardRobinsonFoulds` on a tolerance, and is now also wrong for
+  `InfoRobinsonFoulds` (CHUNK-033) for the same `.FloorNumericalNoise` reason. The
+  tolerance rationale is documented at each metric's comparison in `crosscheck.jl` itself,
+  just not reflected in the README's framing prose. Low cost to fix; noted here rather
+  than fixed mid-chunk per scope discipline.
 - **Warning noise in the test suite.** A full run prints roughly 400 uncaptured
   "defined on unrooted trees but the ... tree is rooted" warnings, from randomized cases in
   `test/test_robinsonfoulds.jl` that exercise rooted inputs without wrapping the call in
