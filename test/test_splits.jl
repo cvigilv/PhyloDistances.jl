@@ -1,5 +1,6 @@
 using PhyloDistances
-using PhyloDistances: branchlength, incidencematrix, istrivial
+using PhyloDistances: SplitKey, branchlength, incidencematrix, istrivial
+using Random
 using Test
 
 """The canonical mask over `index` marking exactly `labels`, oriented away from taxon 1."""
@@ -213,6 +214,47 @@ end
     @test_throws KeyError s[mask(index, "T2", "T3")]
 
     @test occursin("Splits(1 over 4 taxa)", sprint(show, s))
+end
+
+@testset "split identity is the underlying words" begin
+    tree = readnw("(T1:1.0,T2:1.0,(T3:1.0,T4:1.0):5.0);")
+    index = taxonindex(tree)
+    s = splits(tree, index)
+    m = mask(index, "T3", "T4")
+
+    # A split is identified by its contents, not by the array type carrying them, so a
+    # caller's `Vector{Bool}` finds the same split a `BitVector` does.
+    @test s[collect(Bool, m)] == 5.0
+    @test haskey(s, collect(Bool, m))
+
+    # The unused bits of a mask's final word are zero, so a mask over more taxa can carry
+    # exactly the same words while describing a different bipartition.
+    longer = vcat(m, falses(1))
+    @test m.chunks == longer.chunks
+    @test !isequal(SplitKey(longer), SplitKey(m))
+    @test !haskey(s, longer)
+    @test_throws KeyError s[longer]
+end
+
+@testset "set operations match elementwise membership" begin
+    # Splits are compared a word at a time; these sizes put the taxa one under, one over,
+    # and exactly on a 64-bit word boundary, where zero padding would show up as a
+    # disagreement with plain elementwise equality.
+    rng = Xoshiro(20260820)
+    for n in (8, 65, 128)
+        a, b = randomtree(rng, n), randomtree(rng, n)
+        index = taxonindex(a, b)
+        sa, sb = splits(a, index), splits(b, index)
+        ma, mb = collect(sa), collect(sb)
+
+        inb(m) = any(==(m), mb)
+        ina(m) = any(==(m), ma)
+
+        @test intersect(sa, sb) == filter(inb, ma)
+        @test setdiff(sa, sb) == filter(!inb, ma)
+        @test union(sa, sb) == vcat(ma, filter(!ina, mb))
+        @test symdiff(sa, sb) == vcat(filter(!inb, ma), filter(!ina, mb))
+    end
 end
 
 @testset "incidencematrix" begin

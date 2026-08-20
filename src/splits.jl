@@ -15,6 +15,27 @@ end
 
 branchlength(node::NewickTree.Node) = NewickTree.distance(node)
 
+# A split's identity as a lookup key. `BitVector` hashes and compares element by element,
+# so using one as a `Dict` key costs O(n) per lookup, which dominates both building a split
+# set and intersecting two of them. The underlying 64-bit words carry the same identity at
+# a 64th of the cost: a `BitArray` holds the unused bits of its final word at zero, the
+# same invariant `==(::BitArray, ::BitArray)` relies on to compare chunks directly.
+struct SplitKey
+    mask::BitVector
+end
+
+_splitkey(mask::BitVector) = SplitKey(mask)
+_splitkey(mask::AbstractVector{Bool}) = SplitKey(BitVector(mask))
+
+Base.hash(key::SplitKey, h::UInt) = hash(key.mask.chunks, hash(length(key.mask), h))
+
+# Masks of different lengths describe different taxon sets, and two of them can still hold
+# equal words, so length is part of the identity rather than an assumption about the caller.
+Base.isequal(a::SplitKey, b::SplitKey) =
+    length(a.mask) == length(b.mask) && a.mask.chunks == b.mask.chunks
+
+Base.:(==)(a::SplitKey, b::SplitKey) = isequal(a, b)
+
 """
     Splits{L}
 
@@ -36,7 +57,7 @@ Construct with [`splits`](@ref).
 struct Splits{L}
     index::TaxonIndex{L}
     masks::Vector{BitVector}
-    lengths::Dict{BitVector,Float64}
+    lengths::Dict{SplitKey,Float64}
 
     Splits{L}(index, masks, lengths) where {L} = new{L}(index, masks, lengths)
 end
@@ -106,7 +127,7 @@ splits(tree; trivial::Bool = false) = splits(tree, taxonindex(tree); trivial)
 function splits(tree, index::TaxonIndex{L}; trivial::Bool = false) where {L}
     ntaxa = length(index)
     masks = BitVector[]
-    lengths = Dict{BitVector,Float64}()
+    lengths = Dict{SplitKey,Float64}()
 
     function record!(below, len)
         mask = _canonical(below)
@@ -115,10 +136,11 @@ function splits(tree, index::TaxonIndex{L}; trivial::Bool = false) where {L}
         count(mask) == 0 && return nothing
         !trivial && istrivial(mask, ntaxa) && return nothing
 
-        if haskey(lengths, mask)
-            lengths[mask] += len
+        key = SplitKey(mask)
+        if haskey(lengths, key)
+            lengths[key] += len
         else
-            lengths[mask] = len
+            lengths[key] = len
             push!(masks, mask)
         end
         return nothing
@@ -139,11 +161,12 @@ Base.length(s::Splits) = length(s.masks)
 Base.isempty(s::Splits) = isempty(s.masks)
 Base.eltype(::Type{<:Splits}) = BitVector
 Base.iterate(s::Splits, state...) = iterate(s.masks, state...)
-Base.pairs(s::Splits) = (mask => s.lengths[mask] for mask in s.masks)
+Base.pairs(s::Splits) = (mask => s.lengths[SplitKey(mask)] for mask in s.masks)
 
-Base.getindex(s::Splits, mask::AbstractVector{Bool}) = s.lengths[mask]
-Base.get(s::Splits, mask::AbstractVector{Bool}, default) = get(s.lengths, mask, default)
-Base.haskey(s::Splits, mask::AbstractVector{Bool}) = haskey(s.lengths, mask)
+Base.getindex(s::Splits, mask::AbstractVector{Bool}) = s.lengths[_splitkey(mask)]
+Base.get(s::Splits, mask::AbstractVector{Bool}, default) =
+    get(s.lengths, _splitkey(mask), default)
+Base.haskey(s::Splits, mask::AbstractVector{Bool}) = haskey(s.lengths, _splitkey(mask))
 Base.in(mask::AbstractVector{Bool}, s::Splits) = haskey(s, mask)
 
 function Base.show(io::IO, s::Splits)
@@ -160,11 +183,39 @@ function _checksharedindex(a::Splits, b::Splits)
     ))
 end
 
-for op in (:intersect, :union, :setdiff, :symdiff)
-    @eval function Base.$op(a::Splits, b::Splits)
-        _checksharedindex(a, b)
-        return $op(a.masks, b.masks)
+# Base's vector set operations would hash each `BitVector` elementwise; going through
+# `SplitKey` keeps their results and ordering while hashing words. A `Splits`'s masks are
+# already distinct, so membership alone decides each result.
+_keyset(s::Splits) = Set{SplitKey}(SplitKey(mask) for mask in s.masks)
+
+function Base.intersect(a::Splits, b::Splits)
+    _checksharedindex(a, b)
+    inb = _keyset(b)
+    return [mask for mask in a.masks if SplitKey(mask) in inb]
+end
+
+function Base.setdiff(a::Splits, b::Splits)
+    _checksharedindex(a, b)
+    inb = _keyset(b)
+    return [mask for mask in a.masks if !(SplitKey(mask) in inb)]
+end
+
+function Base.union(a::Splits, b::Splits)
+    _checksharedindex(a, b)
+    ina = _keyset(a)
+    result = copy(a.masks)
+    for mask in b.masks
+        SplitKey(mask) in ina || push!(result, mask)
     end
+    return result
+end
+
+function Base.symdiff(a::Splits, b::Splits)
+    _checksharedindex(a, b)
+    ina, inb = _keyset(a), _keyset(b)
+    result = [mask for mask in a.masks if !(SplitKey(mask) in inb)]
+    append!(result, (mask for mask in b.masks if !(SplitKey(mask) in ina)))
+    return result
 end
 
 """
