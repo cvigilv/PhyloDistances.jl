@@ -16,17 +16,17 @@ its garbage collector saw, which includes everything already resident.
 ## Environment
 
 - Julia 1.12.6 on arm64-apple-darwin24.0.0
-- TreeDist 2.14.1 | ape 5.8.1 | R 4.4.2
-- Quartet 1.3.0 | ape 5.8.1 | R 4.4.2
+- TreeDist 2.14.1 | ape 5.8.1 | R 4.6.1
+- Quartet 1.3.0 | ape 5.8.1 | R 4.6.1
 
 ## Robinson-Foulds, one pair of trees
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs |
 |-----:|---------------:|---------:|------:|------------:|-------------:|
-| 10 | 1.6 µs | 41.0 µs | 25.2× faster | 0.01 MB | 101 |
-| 50 | 6.5 µs | 51.0 µs | 7.8× faster | 0.02 MB | 107 |
-| 200 | 27.1 µs | 123.0 µs | 4.5× faster | 0.07 MB | 123 |
-| 1000 | 126.8 µs | 2.52 ms | 19.9× faster | 0.34 MB | 171 |
+| 10 | 1.6 µs | 46.0 µs | 29.4× faster | 0.01 MB | 101 |
+| 50 | 5.7 µs | 53.9 µs | 9.5× faster | 0.02 MB | 107 |
+| 200 | 26.4 µs | 109.9 µs | 4.2× faster | 0.07 MB | 123 |
+| 1000 | 124.0 µs | 2.20 ms | 17.8× faster | 0.34 MB | 171 |
 
 ## Robinson-Foulds, all pairs within a collection
 
@@ -34,9 +34,9 @@ its garbage collector saw, which includes everything already resident.
 
 | | time | per pair |
 |---|-----:|---------:|
-| PhyloDistances | 7.07 ms | 9.1 µs |
-| TreeDist | 1.89 ms | 2.4 µs |
-| ratio | 3.7× slower | |
+| PhyloDistances | 6.62 ms | 8.5 µs |
+| TreeDist | 1.73 ms | 2.2 µs |
+| ratio | 3.8× slower | |
 
 ## Quartet distance, one pair of trees
 
@@ -46,13 +46,13 @@ rows past that size have no reference to compare against.
 
 | taxa | quartets | PhyloDistances | Quartet | ratio | Julia alloc | agree |
 |-----:|---------:|---------------:|--------:|------:|------------:|:------|
-| 10 | 210 | 16.7 µs | 1.62 ms | 97.3× faster | 0.03 MB | yes |
-| 50 | 230,300 | 401.7 µs | 10.97 ms | 27.3× faster | 0.41 MB | yes |
-| 200 | 64,684,950 | 16.34 ms | 158.85 ms | 9.7× faster | 5.29 MB | yes |
-| 477 | 2,130,031,575 | 207.31 ms | 893.26 ms | 4.3× faster | 30.46 MB | yes |
-| 700 | 9,918,641,075 | 643.96 ms | — | — | 61.85 MB | — |
-| 1000 | 41,417,124,750 | 1.95 s | — | — | 126.66 MB | — |
-| 1500 | 210,094,780,875 | 7.13 s | — | — | 283.49 MB | — |
+| 10 | 210 | 15.7 µs | 1.38 ms | 88.3× faster | 0.03 MB | yes |
+| 50 | 230,300 | 350.3 µs | 7.23 ms | 20.6× faster | 0.41 MB | yes |
+| 200 | 64,684,950 | 13.16 ms | 102.07 ms | 7.8× faster | 5.29 MB | yes |
+| 477 | 2,130,031,575 | 153.54 ms | 568.43 ms | 3.7× faster | 30.46 MB | yes |
+| 700 | 9,918,641,075 | 449.95 ms | — | — | 61.85 MB | — |
+| 1000 | 41,417,124,750 | 1.38 s | — | — | 126.63 MB | — |
+| 1500 | 210,094,780,875 | 4.72 s | — | — | 283.49 MB | — |
 
 `QuartetDistance`'s default `:fast` algorithm counts concordant quartets 
 in `O(n³)` without enumerating them (`algorithm = :naive` keeps the exact 
@@ -71,10 +71,10 @@ than exact equality because the two solvers round differently internally
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs | agree |
 |-----:|---------------:|---------:|------:|------------:|-------------:|:------|
-| 10 | 10.5 µs | 56.0 µs | 5.3× faster | 0.01 MB | 388 | yes |
-| 50 | 87.1 µs | 82.0 µs | 1.1× slower | 0.12 MB | 1876 | yes |
-| 200 | 844.5 µs | 455.0 µs | 1.9× slower | 1.03 MB | 7306 | yes |
-| 1000 | 38.73 ms | 16.94 ms | 2.3× slower | 17.77 MB | 36158 | yes |
+| 10 | 10.5 µs | 67.0 µs | 6.4× faster | 0.01 MB | 390 | yes |
+| 50 | 74.2 µs | 91.9 µs | 1.2× faster | 0.11 MB | 1877 | yes |
+| 200 | 833.7 µs | 425.9 µs | 2.0× slower | 0.73 MB | 7309 | yes |
+| 1000 | 22.18 ms | 17.18 ms | 1.3× slower | 10.42 MB | 36161 | yes |
 
 ## Info-Robinson-Foulds, one pair of trees
 
@@ -88,7 +88,7 @@ either side rounds an optimization differently.
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs | agree |
 |-----:|---------------:|---------:|------:|------------:|-------------:|:------|
-| 10 | 10.3 µs | 118.0 µs | 11.4× faster | 0.01 MB | 373 | yes |
-| 50 | 62.9 µs | 306.8 µs | 4.9× faster | 0.09 MB | 1861 | yes |
-| 200 | 370.7 µs | 1.03 ms | 2.8× faster | 0.39 MB | 7294 | yes |
-| 1000 | 4.77 ms | 7.45 ms | 1.6× faster | 2.53 MB | 36137 | yes |
+| 10 | 10.4 µs | 132.1 µs | 12.7× faster | 0.01 MB | 373 | yes |
+| 50 | 58.2 µs | 292.8 µs | 5.0× faster | 0.09 MB | 1861 | yes |
+| 200 | 257.8 µs | 968.0 µs | 3.8× faster | 0.39 MB | 7294 | yes |
+| 1000 | 1.43 ms | 6.82 ms | 4.8× faster | 2.53 MB | 36137 | yes |

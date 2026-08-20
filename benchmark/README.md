@@ -69,11 +69,11 @@ The picture at the time of writing, from `results.md`.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 1.5 µs | 43.9 µs | 28.8× faster |
-| 50 | 5.4 µs | 53.2 µs | 9.9× faster |
-| 200 | 24.5 µs | 129.0 µs | 5.3× faster |
-| 1000 | 111.2 µs | 2.56 ms | 23.0× faster |
-| all pairs, 40 trees × 60 taxa | 6.13 ms | 2.00 ms | 3.1× slower |
+| 10 | 1.6 µs | 46.0 µs | 29.4× faster |
+| 50 | 5.7 µs | 53.9 µs | 9.5× faster |
+| 200 | 26.4 µs | 109.9 µs | 4.2× faster |
+| 1000 | 124.0 µs | 2.20 ms | 17.8× faster |
+| all pairs, 40 trees × 60 taxa | 6.62 ms | 1.73 ms | 3.8× slower |
 
 Robinson-Foulds is computed by Day's (1985) cluster-table algorithm, the same one TreeDist
 uses. Rooting a tree at one taxon and numbering its leaves depth-first makes every cluster a
@@ -102,21 +102,21 @@ allocation, never in array indexing: the encoding's own loops are a minority of 
 and only one frame of 1,399 showed runtime dispatch. Removing bounds checks would trade
 silent undefined behaviour for a few percent of something that is not the bottleneck.
 
-**The all-pairs gap is what remains.** 7.9 µs per pair against TreeDist's 2.6 µs, down from
-72.5× to 3.1×. Every pair still re-reads both trees; hoisting that out of the loop, and
+**The all-pairs gap is what remains.** 8.5 µs per pair against TreeDist's 2.2 µs, down from
+72.5× to 3.8×. Every pair still re-reads both trees; hoisting that out of the loop, and
 running independent pairs in parallel, is the outstanding work. It changes no results.
 
 ### Quartet distance
 
 | taxa | quartets | PhyloDistances | Quartet | ratio |
 |-----:|---------:|---------------:|--------:|------:|
-| 10 | 210 | 17.6 µs | 1.40 ms | 79.7× faster |
-| 50 | 230,300 | 427.2 µs | 11.25 ms | 26.3× faster |
-| 200 | 64,684,950 | 17.24 ms | 160.91 ms | 9.3× faster |
-| 477 | 2,130,031,575 | 218.29 ms | 899.19 ms | 4.1× faster |
-| 700 | 9,918,641,075 | 681.28 ms | — | — |
-| 1000 | 41,417,124,750 | 1.96 s | — | — |
-| 1500 | 210,094,780,875 | 7.33 s | — | — |
+| 10 | 210 | 15.7 µs | 1.38 ms | 88.3× faster |
+| 50 | 230,300 | 350.3 µs | 7.23 ms | 20.6× faster |
+| 200 | 64,684,950 | 13.16 ms | 102.07 ms | 7.8× faster |
+| 477 | 2,130,031,575 | 153.54 ms | 568.43 ms | 3.7× faster |
+| 700 | 9,918,641,075 | 449.95 ms | — | — |
+| 1000 | 41,417,124,750 | 1.38 s | — | — |
+| 1500 | 210,094,780,875 | 4.72 s | — | — |
 
 `QuartetDistance` defaults to `algorithm = :fast`, an `O(n³)` scheme that counts concordant
 quartets by reducing each to a rooted triple under every possible outgroup, rather than
@@ -135,6 +135,25 @@ at 477 tips the reported `N` column is already `2 * Q` overflowed to `NA`, while
 still fits. Read `Q`, `s`, `d`, `r1`, `r2`, `u`; never `N`. The rows past that limit have
 no reference column because of it, not because the comparison was skipped.
 
+Two costs inside the concordant count were worth more than anything about the algorithm
+itself.
+
+**Tabulating a clade's membership is not always worth its `O(n)`.** For each branch point of
+the first tree the count builds a prefix sum over the second tree's numbering, which answers
+"how many of this clade's leaves lie in that one" in constant time. That pays handsomely at a
+branch point that serves thousands of pairs and not at all at a cherry, which scans every
+taxon to answer one — and a binary tree has as many cherries as it has deep branch points.
+Building the table only where `npairs × |clade|` exceeds `n`, and counting the pairs directly
+where it does not, cut about a quarter of the total at every size tested, with no change to
+the `O(n³)` bound.
+
+**A power-of-two leading dimension is worth a factor of two to four on its own.** The
+most-recent-common-ancestor intervals live in an `n × n` matrix read and written at scattered
+`[x, y]`, and when `n` is a power of two those accesses collide in the cache: at 1024 taxa the
+count ran four times slower than at 1000, for 2.4% more work. One row of padding removes it.
+Packing each interval's two `Int32` endpoints into one `UInt64` — they are always written and
+read together — halves the traffic again.
+
 `run.jl` checks that both implementations returned the same distance for every pair it
 timed, and the table says so per row — a benchmark that quietly measured two different
 computations would be worthless.
@@ -143,15 +162,15 @@ computations would be worthless.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 10.5 µs | 56.0 µs | 5.3× faster |
-| 50 | 87.1 µs | 82.0 µs | 1.1× slower |
-| 200 | 844.5 µs | 455.0 µs | 1.9× slower |
-| 1000 | 38.73 ms | 16.94 ms | 2.3× slower |
+| 10 | 10.5 µs | 67.0 µs | 6.4× faster |
+| 50 | 74.2 µs | 91.9 µs | 1.2× faster |
+| 200 | 833.7 µs | 425.9 µs | 2.0× slower |
+| 1000 | 22.18 ms | 17.18 ms | 1.3× slower |
 
 An earlier version of this benchmark showed a much worse picture — up to 7× slower at
-n=1000, widening rather than narrowing with tree size. Two rounds of work closed most of
-that gap, but not by the same route each time, and the second round is worth being honest
-about: it changed *what* the solver is, not really *how fast* it is.
+n=1000, widening rather than narrowing with tree size. Four rounds of work closed most of
+that gap, and not by the same route each time; the second is worth being honest about,
+because it changed *what* the solver is, not really *how fast* it is.
 
 **Round one fixed real waste.** The score matrix allocated a `BitVector` per cell
 (`count(a .& b)` — broadcasting `.&` builds a fresh array before `count` ever runs, once
@@ -184,7 +203,28 @@ a real floating-point degeneracy.
 **Round three was not about this metric at all.** The split-hashing change described under
 Info-Robinson-Foulds below applies to every metric that builds a split set, and moved this
 one from 1.3×/2.6×/2.8× slower to 1.1×/1.9×/2.3× slower at n=50/200/1000 without touching
-the solver. What is left is the assignment solve itself.
+the solver.
+
+**Round four was about memory layout, in three places, and none of it changed a result.** On
+a controlled 16/64/256/1024 ramp it took the metric 1.06×/1.28×/1.44×/1.81× faster and cut
+allocation at the top of the ramp from 18.6 MB to 10.8 MB.
+
+- *The score matrix read a thousand separate objects.* Each split is its own `BitVector`, so
+  intersecting every pair chased two pointers into unrelated parts of the heap. Copying the
+  masks' words into one matrix first — one column per split — makes each pair two contiguous
+  runs, and cost microseconds against milliseconds saved.
+- *`x^1` is `x`.* The Jaccard score is raised to `k`, and `k = 1` is both the default and the
+  only exponent `NyeSimilarity` uses. Choosing the exponent once per matrix rather than
+  testing for it once per pair took the matrix from 11.5 ms to 8.5 ms at n=1000.
+- *The solver read its cost matrix across the grain.* Every phase of Jonker & Volgenant after
+  column reduction scans one row against all columns, which in a Julia `Matrix` strides a
+  whole row length per element. An assignment problem and its transpose have the same
+  solution with the two sides exchanged, so the solver now reads `cost[j, i]` and swaps its
+  two results — the scans run down a column of storage and nothing is copied. A square
+  problem, which is what two trees on the same taxa almost always give, also stopped being
+  copied into a padded square of the same size.
+
+What is left is the assignment solve itself, which is now most of the metric.
 
 `agree` in `results.md`'s table uses a tolerance rather than exact equality, because the two
 implementations solve the underlying assignment problem with independently written
@@ -198,10 +238,10 @@ speed only.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 10.3 µs | 118.0 µs | 11.4× faster |
-| 50 | 62.9 µs | 306.8 µs | 4.9× faster |
-| 200 | 370.7 µs | 1.03 ms | 2.8× faster |
-| 1000 | 4.77 ms | 7.45 ms | 1.6× faster |
+| 10 | 10.4 µs | 132.1 µs | 12.7× faster |
+| 50 | 58.2 µs | 292.8 µs | 5.0× faster |
+| 200 | 257.8 µs | 968.0 µs | 3.8× faster |
+| 1000 | 1.43 ms | 6.82 ms | 4.8× faster |
 
 `InfoRobinsonFoulds` weights each split by its phylogenetic information content instead of
 counting it as one, but — unlike Jaccard-Robinson-Foulds — matches splits by exact identity,
@@ -235,8 +275,15 @@ identity too, since masks over different taxon counts can hold equal words. The 
 unchanged — splits are still `BitVector`s — so this carries no n ≤ 64 ceiling, which packing
 each split into a single `UInt64` would have.
 
-Building the split sets is now the dominant term at n=1000 (1.88 ms of 4.77 ms), most of it
-the tree walk's per-branch allocation rather than any lookup.
+**Sorting the splits had the same defect the hashing did.** The masks are sorted so that two
+trees with the same splits iterate them in the same order, and `isless(::BitVector,
+::BitVector)` compares bit by bit: at n=1000 sorting one tree's splits took 1.73 ms of the
+1.82 ms the whole `splits` call cost. Ordering on the backing words instead — a different
+canonical order, and equally canonical, since the words determine the mask — makes it 0.03 ms.
+That is the largest single share of this metric, which it took from 4.77 ms to 1.43 ms at
+n=1000, and it applies to every metric that builds a split set.
+
+What remains at n=1000 is the tree walk's per-branch allocation rather than any lookup.
 
 `agree` uses a tolerance rather than exact equality only because TreeDist floors its result
 near zero (`.FloorNumericalNoise`), not because either side solves an optimization
