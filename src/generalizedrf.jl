@@ -3,15 +3,38 @@
 # only in the exponent applied to it and in whether conflicting splits may be matched.
 
 # Population count of `a .& b` without materializing the intermediate BitVector that
-# broadcasting `.&` would allocate. A split-matching metric calls this O(n²) times — once
-# per pair of splits — so the allocation avoided here is the single largest cost in
-# building its score matrix. Safe with no bounds handling: BitVector's unused trailing
-# bits are always zero, and `a`/`b` share their taxon count by construction (both are
-# built from the same TaxonIndex), so their chunk vectors are the same length.
+# broadcasting `.&` would allocate. Safe with no bounds handling: BitVector's unused
+# trailing bits are always zero, and `a`/`b` share their taxon count by construction (both
+# are built from the same TaxonIndex), so their chunk vectors are the same length.
 function _countand(a::BitVector, b::BitVector)
     s = 0
     for i in eachindex(a.chunks, b.chunks)
         s += count_ones(a.chunks[i] & b.chunks[i])
+    end
+    return s
+end
+
+# The machine words backing a whole split set, one column per split. A split-matching
+# metric intersects every pair of splits, O(n²) of them, and each `BitVector` in a `Splits`
+# is a separately allocated object: reading two of them per pair chases two pointers into
+# unrelated parts of the heap. Copying the words into one matrix first makes each pair two
+# contiguous runs of memory, which costs microseconds against the milliseconds the score
+# matrix spends reading them.
+function _packmasks(masks::Vector{BitVector})
+    nwords = isempty(masks) ? 0 : length(first(masks).chunks)
+    words = Matrix{UInt64}(undef, nwords, length(masks))
+    for (j, mask) in enumerate(masks)
+        copyto!(view(words, :, j), mask.chunks)
+    end
+    return words
+end
+
+# Population count of the intersection of the splits held in column `i` of `w1` and column
+# `j` of `w2`, both packed by `_packmasks` over the same taxon count.
+function _countand(w1::Matrix{UInt64}, w2::Matrix{UInt64}, i::Int, j::Int, nwords::Int)
+    s = 0
+    for w in 1:nwords
+        s += count_ones(w1[w, i] & w2[w, j])
     end
     return s
 end
@@ -27,12 +50,13 @@ end
 # grows: a mismatched pair's score falls monotonically toward zero, with no special case
 # needed for `k = Inf`.
 #
-# Split into a count-based core and a mask-based wrapper so that scoring every pair of two
-# trees' splits (`_jaccardscorematrix`) can hoist each split's marked-taxon count out of
-# the O(n²) loop — it depends on the row or column alone, never on the pair — while a
-# standalone call still takes masks directly.
-function _jaccardscorecore(
-    a_and_b::Integer, na::Integer, nb::Integer, ntaxa::Integer; k::Real, allowconflict::Bool
+# Stated in counts rather than masks so that scoring every pair of two trees' splits
+# (`_jaccardscorematrix`) can hoist each split's marked-taxon count out of the O(n²) loop —
+# it depends on the row or column alone, never on the pair — while a standalone call
+# (`_jaccardscore`) still takes masks directly. The exponent stays outside so that a whole
+# score matrix pays for it only when `k` calls for it.
+function _jaccardsimilarity(
+    a_and_b::Integer, na::Integer, nb::Integer, ntaxa::Integer; allowconflict::Bool
 )
     nA, nB = ntaxa - na, ntaxa - nb
     a_and_B = na - a_and_b
@@ -51,12 +75,12 @@ function _jaccardscorecore(
     jaccard_aB = a_and_B / (ntaxa - A_and_b)
     jaccard_Ab = A_and_b / (ntaxa - a_and_B)
 
-    similarity = max(min(jaccard_ab, jaccard_AB), min(jaccard_aB, jaccard_Ab))
-    return similarity^k
+    return max(min(jaccard_ab, jaccard_AB), min(jaccard_aB, jaccard_Ab))
 end
 
 function _jaccardscore(a::BitVector, b::BitVector, ntaxa::Integer; k::Real, allowconflict::Bool)
-    return _jaccardscorecore(_countand(a, b), count(a), count(b), ntaxa; k, allowconflict)
+    similarity = _jaccardsimilarity(_countand(a, b), count(a), count(b), ntaxa; allowconflict)
+    return similarity^k
 end
 
 # The score matrix a split-matching metric optimizes over, built directly rather than
@@ -65,17 +89,30 @@ end
 function _jaccardscorematrix(
     s1::Splits, s2::Splits, ntaxa::Integer; k::Real, allowconflict::Bool
 )
-    n1, n2 = length(s1), length(s2)
+    w1, w2 = _packmasks(s1.masks), _packmasks(s2.masks)
     na = [count(m) for m in s1.masks]
     nb = [count(m) for m in s2.masks]
+    pairscore = Matrix{Float64}(undef, length(s1), length(s2))
 
-    pairscore = Matrix{Float64}(undef, n1, n2)
-    for j in 1:n2
-        b = s2.masks[j]
+    # `x^1 === x`, so at `k = 1` — the default, and the only exponent `NyeSimilarity` uses —
+    # the exponentiation is dropped rather than tested for inside the loop, which is entered
+    # once per pair of splits.
+    sharpen = isone(k) ? identity : Base.Fix2(^, k)
+    return _fillpairscores!(pairscore, sharpen, w1, w2, na, nb, ntaxa, allowconflict)
+end
+
+function _fillpairscores!(
+    pairscore::Matrix{Float64}, sharpen, w1::Matrix{UInt64}, w2::Matrix{UInt64},
+    na::Vector{Int}, nb::Vector{Int}, ntaxa::Integer, allowconflict::Bool
+)
+    nwords = size(w1, 1)
+    for j in axes(pairscore, 2)
         nbj = nb[j]
-        for i in 1:n1
-            pairscore[i, j] =
-                _jaccardscorecore(_countand(s1.masks[i], b), na[i], nbj, ntaxa; k, allowconflict)
+        for i in axes(pairscore, 1)
+            similarity = _jaccardsimilarity(
+                _countand(w1, w2, i, j, nwords), na[i], nbj, ntaxa; allowconflict
+            )
+            pairscore[i, j] = sharpen(similarity)
         end
     end
     return pairscore
