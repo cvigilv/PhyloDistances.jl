@@ -447,6 +447,20 @@ Produce these live in the MCP Julia session and let them go when it exits.
   primitives) and reuses `Splits`'s existing `intersect`, not CHUNK-010's solver — the
   "generalized RF" grouping in TreeDist's file layout is not a reliable guide to which
   metrics need the assignment framework in this package.
+- 2026-08-20 (CHUNK-034): Summing an information-content quantity over a whole split set
+  goes through a `SplitInfoTable`, not the single-value `splitinfo`/`log2rooted`. The
+  single-value forms accumulate their recurrence per call, so a per-split loop over them is
+  `O(n²)`; the table is one `O(n)` pass read back in constant time, and because it is a
+  prefix scan of the same loop the two agree **bitwise**, not merely to tolerance. Any
+  metric that computes `SplitwiseInfo`, clustering entropy or mutual information across a
+  tree's splits should build one table per comparison and pass it down.
+- 2026-08-20 (CHUNK-035): A split's identity for lookup is `SplitKey`, which hashes the
+  machine words backing the mask; a bare `BitVector` must not be used as a `Dict` key or
+  `Set` member. `hash(::BitVector)` and `isequal` walk the vector element by element, so
+  either costs `O(n)` per split — 1.383 µs against 16.074 ns for the same mask's 16 words
+  at n=1000. This is sound for the same reason Base's `==(::BitArray, ::BitArray)` compares
+  `.chunks` directly (a `BitArray` holds its final word's unused bits at zero), and length
+  belongs in the identity because masks over different taxon counts can hold equal words.
 
 ## Chunks
 
@@ -594,8 +608,10 @@ Produce these live in the MCP Julia session and let them go when it exits.
   idempotent.
 - **Notes**: Lives in `src/splits.jl`. A split is a `BitVector` over `TaxonIndex`
   positions, **oriented so the first taxon is never a member**. `Splits` holds the masks
-  plus a `Dict{BitVector,Float64}` of supporting branch lengths; index with a mask to get
-  its length, iterate to get masks, `pairs` for both.
+  plus a `Dict{SplitKey,Float64}` of supporting branch lengths; index with a mask to get
+  its length, iterate to get masks, `pairs` for both. `SplitKey` (CHUNK-035) is what makes
+  that lookup `O(n/64)` rather than `O(n)`; the masks themselves are still `BitVector`s and
+  are what iteration yields.
 
   **Deviation from the plan's expectation:** rooted trees give **n−3** splits, not n−2.
   Canonical orientation makes the representation inherently unrooted — the root's two
@@ -952,10 +968,11 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `log2rooted(n)`/`log2unrooted(n)` are a running sum of `log2(2j-3)` terms (verified
   bitwise-equivalent to TreeDist's closed-form `lgamma` fallback, `R/tree_distance_rf.R`
   and `inst/include/TreeDist/mutual_clustering_impl.h`, for `m` up to 7 against the known
-  double-factorial sequence), **not** a precomputed table — TreeDist tables these up to 64
-  tips because it is called inside a tight per-pair, per-split loop; this package has no
-  such loop yet, so a table was deferred rather than built speculatively. Revisit once
-  CHUNK-033 (or CHUNK-014/015) profiling shows it matters — see Open Questions.
+  double-factorial sequence). TreeDist tables these up to 64 tips because it is called
+  inside a tight per-pair, per-split loop; this package deferred a table rather than
+  building one speculatively, and CHUNK-033's benchmark then showed it mattered.
+  **CHUNK-034 added it** as `SplitInfoTable`, leaving these single-value forms exactly as
+  they are — they remain the cheaper choice for a one-off lookup.
 
   `splitinfo`, `clusteringentropy` and `mutualinformation` port
   `robinson_foulds_info`/`ic_matching`'s per-split formula, `binary_entropy_counts.cpp`,
@@ -1135,11 +1152,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Verification strategy**: The matrix agrees entrywise with repeated pairwise calls; the
   diagonal is zero (or maximal, for similarities); preprocessing allocations scale as O(n)
   in the number of trees rather than O(n²).
-- **Notes**: **Measured motivation**: all-pairs Robinson-Foulds runs 3.6× slower than
-  TreeDist at 8.0 µs per pair against 2.2 µs, while a *single* pair is 4–25× faster. The gap
-  is entirely that each pair re-reads both trees. Hoisting the per-tree work out of the loop
-  is the fix, and independent pairs are also embarrassingly parallel, so `@threads` belongs
-  here rather than inside any single comparison. Neither changes results. See `benchmark/`.
+- **Notes**: **Measured motivation**: all-pairs Robinson-Foulds runs 3.7× slower than
+  TreeDist at 9.1 µs per pair against 2.4 µs, while a *single* pair is 4.5–25× faster.
+  The gap is entirely that each pair re-reads both trees. Hoisting the per-tree work out of
+  the loop is the fix, and independent pairs are also embarrassingly parallel, so `@threads`
+  belongs here rather than inside any single comparison. Neither changes results.
+  See `benchmark/`.
 
 ### CHUNK-025: visualization-extension
 - **Description**: Implement the four composable primitives from Target Outputs
@@ -1301,6 +1319,11 @@ Produce these live in the MCP Julia session and let them go when it exits.
   now measured rather than merely anticipated. **Addressed by CHUNK-034**, not by this
   chunk — see its Description for why the fix belongs in the shared primitive rather than
   in this metric alone.
+
+  **Outcome**: CHUNK-034 (the information table) and CHUNK-035 (word-hashed split lookup)
+  together took this metric to **faster than TreeDist at every size measured** —
+  11.4×/4.9×/2.8×/1.6× at n=10/50/200/1000, from 44.03 ms to 4.77 ms at n=1000. The second
+  cause was not the information sum at all; see CHUNK-035.
 
 ### CHUNK-034: split-information-table
 - **Description**: Give every metric that sums [`splitinfo`](@ref) (or
@@ -1523,8 +1546,11 @@ Produce these live in the MCP Julia session and let them go when it exits.
   `Distances.Metric` directly once each is implemented and its properties are established
   (CHUNK-021 tests the axioms). Changing this after release is breaking.
 - ~~**`log2rooted`/`log2unrooted` recompute their running sum from scratch on every
-  call.**~~ Tracked as CHUNK-034 (2026-08-20) now that it has moved from a theoretical
-  concern to a measured one: `InfoRobinsonFoulds` (CHUNK-033), which sums the
+  call.**~~ **Resolved 2026-08-20 by CHUNK-034**, which tabled the recurrence, and then by
+  CHUNK-035, which removed a second `O(n²)` cost this one had been masking: after tabling,
+  the information sum was 5 µs of a 20 ms comparison, and what remained was `BitVector`
+  hashing. `InfoRobinsonFoulds` is now faster than TreeDist at every size measured. The
+  original measurement that prompted both: `InfoRobinsonFoulds` (CHUNK-033), which sums the
   phylogenetic information content of every split in an n-taxon tree and so pays this
   `O(n²)` cost twice per comparison, benchmarked at 10.0×/2.0× faster than
   `TreeDist::InfoRobinsonFoulds` at n=10/50 but **1.7×/5.6× slower** at n=200/1000 — a
