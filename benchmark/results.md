@@ -23,10 +23,10 @@ its garbage collector saw, which includes everything already resident.
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs |
 |-----:|---------------:|---------:|------:|------------:|-------------:|
-| 10 | 2.0 µs | 42.0 µs | 21.0× faster | 0.01 MB | 101 |
-| 50 | 7.9 µs | 51.0 µs | 6.4× faster | 0.02 MB | 107 |
-| 200 | 35.1 µs | 128.0 µs | 3.6× faster | 0.07 MB | 123 |
-| 1000 | 166.2 µs | 2.62 ms | 15.8× faster | 0.34 MB | 171 |
+| 10 | 1.6 µs | 41.0 µs | 25.2× faster | 0.01 MB | 101 |
+| 50 | 6.5 µs | 51.0 µs | 7.8× faster | 0.02 MB | 107 |
+| 200 | 27.1 µs | 123.0 µs | 4.5× faster | 0.07 MB | 123 |
+| 1000 | 126.8 µs | 2.52 ms | 19.9× faster | 0.34 MB | 171 |
 
 ## Robinson-Foulds, all pairs within a collection
 
@@ -34,9 +34,9 @@ its garbage collector saw, which includes everything already resident.
 
 | | time | per pair |
 |---|-----:|---------:|
-| PhyloDistances | 9.34 ms | 12.0 µs |
-| TreeDist | 2.01 ms | 2.6 µs |
-| ratio | 4.6× slower | |
+| PhyloDistances | 7.07 ms | 9.1 µs |
+| TreeDist | 1.89 ms | 2.4 µs |
+| ratio | 3.7× slower | |
 
 ## Quartet distance, one pair of trees
 
@@ -46,13 +46,13 @@ rows past that size have no reference to compare against.
 
 | taxa | quartets | PhyloDistances | Quartet | ratio | Julia alloc | agree |
 |-----:|---------:|---------------:|--------:|------:|------------:|:------|
-| 10 | 210 | 18.0 µs | 1.65 ms | 91.3× faster | 0.03 MB | yes |
-| 50 | 230,300 | 427.0 µs | 11.56 ms | 27.1× faster | 0.41 MB | yes |
-| 200 | 64,684,950 | 18.29 ms | 165.37 ms | 9.0× faster | 5.29 MB | yes |
-| 477 | 2,130,031,575 | 228.75 ms | 928.43 ms | 4.1× faster | 30.46 MB | yes |
-| 700 | 9,918,641,075 | 743.79 ms | — | — | 61.85 MB | — |
-| 1000 | 41,417,124,750 | 2.03 s | — | — | 126.66 MB | — |
-| 1500 | 210,094,780,875 | 8.37 s | — | — | 283.49 MB | — |
+| 10 | 210 | 16.7 µs | 1.62 ms | 97.3× faster | 0.03 MB | yes |
+| 50 | 230,300 | 401.7 µs | 10.97 ms | 27.3× faster | 0.41 MB | yes |
+| 200 | 64,684,950 | 16.34 ms | 158.85 ms | 9.7× faster | 5.29 MB | yes |
+| 477 | 2,130,031,575 | 207.31 ms | 893.26 ms | 4.3× faster | 30.46 MB | yes |
+| 700 | 9,918,641,075 | 643.96 ms | — | — | 61.85 MB | — |
+| 1000 | 41,417,124,750 | 1.95 s | — | — | 126.66 MB | — |
+| 1500 | 210,094,780,875 | 7.13 s | — | — | 283.49 MB | — |
 
 `QuartetDistance`'s default `:fast` algorithm counts concordant quartets 
 in `O(n³)` without enumerating them (`algorithm = :naive` keeps the exact 
@@ -71,10 +71,10 @@ than exact equality because the two solvers round differently internally
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs | agree |
 |-----:|---------------:|---------:|------:|------------:|-------------:|:------|
-| 10 | 11.2 µs | 59.1 µs | 5.3× faster | 0.01 MB | 388 | yes |
-| 50 | 106.4 µs | 86.1 µs | 1.2× slower | 0.12 MB | 1876 | yes |
-| 200 | 1.27 ms | 487.8 µs | 2.6× slower | 1.03 MB | 7306 | yes |
-| 1000 | 50.65 ms | 17.87 ms | 2.8× slower | 17.77 MB | 36158 | yes |
+| 10 | 10.5 µs | 56.0 µs | 5.3× faster | 0.01 MB | 388 | yes |
+| 50 | 87.1 µs | 82.0 µs | 1.1× slower | 0.12 MB | 1876 | yes |
+| 200 | 844.5 µs | 455.0 µs | 1.9× slower | 1.03 MB | 7306 | yes |
+| 1000 | 38.73 ms | 16.94 ms | 2.3× slower | 17.77 MB | 36158 | yes |
 
 ## Info-Robinson-Foulds, one pair of trees
 
@@ -88,7 +88,7 @@ either side rounds an optimization differently.
 
 | taxa | PhyloDistances | TreeDist | ratio | Julia alloc | Julia allocs | agree |
 |-----:|---------------:|---------:|------:|------------:|-------------:|:------|
-| 10 | 13.0 µs | 130.2 µs | 10.0× faster | 0.01 MB | 372 | yes |
-| 50 | 158.6 µs | 318.1 µs | 2.0× faster | 0.09 MB | 1860 | yes |
-| 200 | 1.94 ms | 1.12 ms | 1.7× slower | 0.40 MB | 7294 | yes |
-| 1000 | 44.03 ms | 7.92 ms | 5.6× slower | 2.54 MB | 36137 | yes |
+| 10 | 10.3 µs | 118.0 µs | 11.4× faster | 0.01 MB | 373 | yes |
+| 50 | 62.9 µs | 306.8 µs | 4.9× faster | 0.09 MB | 1861 | yes |
+| 200 | 370.7 µs | 1.03 ms | 2.8× faster | 0.39 MB | 7294 | yes |
+| 1000 | 4.77 ms | 7.45 ms | 1.6× faster | 2.53 MB | 36137 | yes |

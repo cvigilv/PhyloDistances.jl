@@ -123,10 +123,10 @@ computations would be worthless.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 12.0 µs | 64.1 µs | 5.4× faster |
-| 50 | 115.7 µs | 92.0 µs | 1.3× slower |
-| 200 | 1.37 ms | 518.8 µs | 2.6× slower |
-| 1000 | 55.1 ms | 19.6 ms | 2.8× slower |
+| 10 | 10.5 µs | 56.0 µs | 5.3× faster |
+| 50 | 87.1 µs | 82.0 µs | 1.1× slower |
+| 200 | 844.5 µs | 455.0 µs | 1.9× slower |
+| 1000 | 38.73 ms | 16.94 ms | 2.3× slower |
 
 An earlier version of this benchmark showed a much worse picture — up to 7× slower at
 n=1000, widening rather than narrowing with tree size. Two rounds of work closed most of
@@ -161,6 +161,11 @@ guard TreeDist's own solver already carries for the same reason, which this proj
 initially (wrongly) assumed was specific to TreeDist's integer-quantized costs rather than
 a real floating-point degeneracy.
 
+**Round three was not about this metric at all.** The split-hashing change described under
+Info-Robinson-Foulds below applies to every metric that builds a split set, and moved this
+one from 1.3×/2.6×/2.8× slower to 1.1×/1.9×/2.3× slower at n=50/200/1000 without touching
+the solver. What is left is the assignment solve itself.
+
 `agree` in `results.md`'s table uses a tolerance rather than exact equality, because the two
 implementations solve the underlying assignment problem with independently written
 solvers — this package's vendored one over exact `Float64` costs, TreeDist's over costs
@@ -173,26 +178,46 @@ speed only.
 
 | taxa | PhyloDistances | TreeDist | ratio |
 |-----:|---------------:|---------:|------:|
-| 10 | 13.0 µs | 130.2 µs | 10.0× faster |
-| 50 | 158.6 µs | 318.1 µs | 2.0× faster |
-| 200 | 1.94 ms | 1.12 ms | 1.7× slower |
-| 1000 | 44.03 ms | 7.92 ms | 5.6× slower |
+| 10 | 10.3 µs | 118.0 µs | 11.4× faster |
+| 50 | 62.9 µs | 306.8 µs | 4.9× faster |
+| 200 | 370.7 µs | 1.03 ms | 2.8× faster |
+| 1000 | 4.77 ms | 7.45 ms | 1.6× faster |
 
 `InfoRobinsonFoulds` weights each split by its phylogenetic information content instead of
 counting it as one, but — unlike Jaccard-Robinson-Foulds — matches splits by exact identity,
 the same relationship classic Robinson-Foulds already computes as a symmetric-difference
-intersection. There is no assignment solve here at all, so the crossover to slower-than-
-TreeDist between n=50 and n=200 has a different cause than Jaccard-Robinson-Foulds's does.
+intersection. There is no assignment solve here at all.
 
-**The likely cause is `log2rooted`/`log2unrooted` recomputing their running sum from
-scratch on every call**, rather than the split intersection itself. Each of an n-taxon
-tree's `~n` splits calls `splitinfo`, which walks a fresh `O(n)` loop, so summing a tree's
-own split information (`SplitwiseInfo`, computed twice per comparison — once per tree) costs
-`O(n²)` even though nothing else in this metric does. TreeDist tables these values up to 64
-tips for exactly this reason (see the plan's Working knowledge). The degradation is steeper
-here than Jaccard-Robinson-Foulds's own — 5.6× slower at n=1000 against 2.8× — despite doing
-strictly less work per pair, which is the signature of a missing table rather than of
-anything intrinsic to matching splits by identity. `agree` uses a tolerance rather than
-exact equality only because TreeDist floors its result near zero
-(`.FloorNumericalNoise`), not because either side solves an optimization differently — see
-`validation/crosscheck.jl`.
+It started out 10.0×/2.0× faster at n=10/50 but 1.7×/5.6× *slower* at n=200/1000 — a
+steeper falloff than Jaccard-Robinson-Foulds's, despite doing strictly less work per pair.
+Two separate `O(n²)` costs were responsible, and neither was the split intersection itself.
+
+**Summing information content recomputed a running sum per split.** `log2rooted` accumulates
+`k` logarithms from scratch on every call, which is fine once but not `~n` times: summing a
+tree's own split information (`SplitwiseInfo`, computed twice per comparison) cost `O(n²)`
+even though nothing else in the metric did. TreeDist tables these values up to 64 tips for
+exactly this reason. `SplitInfoTable` computes `log2rooted(0), …, log2rooted(n)` in one pass
+and reads each value back in constant time; because it is a prefix scan of the same loop,
+adding the same terms in the same order, a tabulated result is *bitwise* identical to the
+per-call one rather than merely close. That halved n=1000 and closed the n=200 crossover.
+
+**A split's identity was computed one bit at a time.** What remained was not the arithmetic
+at all — after tabling, the information sum was 5 µs of a 20 ms comparison. Splits are
+`BitVector`s used as `Dict` keys and `Set` members, and `hash(::BitVector)` walks the vector
+element by element: at n=1000 hashing one mask cost **1.383 µs against 16.074 ns for the 16
+machine words already backing it**, an 86× difference paid on every lookup. Hashing those
+words instead (`SplitKey`) took a comparison from 20.19 ms to 4.77 ms, of which `intersect`
+went from 7.67 ms to 78.5 µs — 98× — and building one tree's splits from 5.70 ms to 1.88 ms.
+
+This is sound for the same reason Base's own `==(::BitArray, ::BitArray)` compares `.chunks`
+directly: a `BitArray` holds the unused bits of its final word at zero. Length is part of the
+identity too, since masks over different taxon counts can hold equal words. The storage is
+unchanged — splits are still `BitVector`s — so this carries no n ≤ 64 ceiling, which packing
+each split into a single `UInt64` would have.
+
+Building the split sets is now the dominant term at n=1000 (1.88 ms of 4.77 ms), most of it
+the tree walk's per-branch allocation rather than any lookup.
+
+`agree` uses a tolerance rather than exact equality only because TreeDist floors its result
+near zero (`.FloorNumericalNoise`), not because either side solves an optimization
+differently — see `validation/crosscheck.jl`.

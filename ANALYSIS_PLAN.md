@@ -814,7 +814,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
      whole split set, so doing CHUNK-034 first means they inherit the `O(n)` path from the
      start instead of each independently discovering, benchmarking, and then fixing the
      same `O(n²)` problem CHUNK-033 already found. CHUNK-012 still does not depend on
-     CHUNK-013 at all and remains unaffected by this reordering. -->
+     CHUNK-013 at all and remains unaffected by this reordering.
+
+     CHUNK-034 and CHUNK-035 are both complete, so **CHUNK-014/015/020/030/031 are next,
+     in any order**; each should build on `SplitInfoTable` from the start rather than on
+     the per-call `splitinfo`, and each inherits word-hashed split lookup for free.
+     CHUNK-012 remains independent of all of this. -->
 
 ### CHUNK-009: branch-score-distance
 - **Description**: Kuhner-Felsenstein branch-score distance: the Euclidean distance
@@ -1311,7 +1316,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
   not a replacement for the one-off case, so nothing downstream needs to change its calling
   convention. Update `InfoRobinsonFoulds` (CHUNK-033) to use it once it exists, since it is
   the first metric shown to pay the cost.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-013
 - **Verification strategy**: The table-backed sum agrees exactly (not just to tolerance)
   with the existing per-call formula, checked over every tree already exercised by
@@ -1324,6 +1329,90 @@ Produce these live in the MCP Julia session and let them go when it exits.
   falloff than `JaccardRobinsonFoulds`'s own despite `InfoRobinsonFoulds` doing no
   assignment solve at all — the signature of a missing table, not of anything intrinsic to
   matching splits by identity. See `benchmark/README.md`'s "Info-Robinson-Foulds" section.
+
+  Implemented as `SplitInfoTable` (`src/information.jl`), a `public` type holding
+  `log2rooted` evaluated at every leaf count from `0` to `n` alongside `log2unrooted(n)`.
+  `log2rooted(table, k)`, `log2unrooted(table)` and `splitinfo(table, k)` /
+  `splitinfo(table, mask)` read from it; the single-argument forms are untouched, so this
+  is a second path rather than a replacement. The table is built by a prefix scan of
+  `log2rooted`'s own loop — the same additions in the same order from the same starting
+  value — which makes a tabulated result **bitwise identical** to the per-call form, tested
+  with `===` rather than `≈` across sizes up to 1000 and over whole random split sets.
+  `splitinfo(table, mask)` takes no `n` of its own and rejects a mask whose length is not
+  the table's, so a mask over a different taxon set fails rather than being answered for
+  the wrong tree size.
+
+  **Measured effect** on `InfoRobinsonFoulds` against `TreeDist::InfoRobinsonFoulds`,
+  10.0×/2.0× faster then 1.7×/5.6× slower at n=10/50/200/1000 beforehand:
+
+  | taxa | before | after | TreeDist | ratio after |
+  |-----:|-------:|------:|---------:|------------:|
+  | 10 | 13.0 µs | 11.4 µs | 128.0 µs | 11.2× faster |
+  | 50 | 158.6 µs | 101.5 µs | 315.9 µs | 3.1× faster |
+  | 200 | 1.94 ms | 1.08 ms | 1.08 ms | 1.0× faster |
+  | 1000 | 44.03 ms | 21.11 ms | 7.72 ms | 2.7× slower |
+
+  The n=200 crossover closed and n=1000 halved, but a gap remained at n=1000. Profiling it
+  showed the information sum was no longer the cost at all (5 µs of a 20 ms comparison);
+  what remained was `BitVector` hashing, which CHUNK-035 addresses.
+
+### CHUNK-035: split-word-hashing
+- **Description**: Give a split an identity computed from the 64-bit words backing its
+  `BitVector` rather than from its elements. `hash(::BitVector)` and `isequal` walk the
+  vector one `Bool` at a time, so every `Dict` lookup and `Set` membership test on a split
+  costs `O(n)`. Splits are used as keys throughout — `Splits` stores branch lengths in a
+  `Dict` keyed by mask, and `intersect`/`union`/`setdiff`/`symdiff` go through `Set` — so
+  building an n-taxon tree's split set and comparing two of them are both `O(n²)`. Keep
+  `BitVector` as the storage and the iteration element type: only the identity used for
+  lookup changes.
+- **Status**: `complete`
+- **Depends on**: CHUNK-004
+- **Verification strategy**: The full suite plus `validation/crosscheck.jl`, since this
+  touches machinery every split-based metric shares rather than any one metric. Set
+  operations checked against elementwise membership on random trees at taxon counts either
+  side of and exactly on a 64-bit word boundary, where zero padding would otherwise show up
+  as a disagreement.
+- **Notes**: Implemented as `SplitKey` (`src/splits.jl`), an internal wrapper whose `hash`
+  is `hash(mask.chunks, hash(length(mask)))` and whose `isequal` compares lengths and then
+  words. This is as sound as Base's own `==(::BitArray, ::BitArray)`, which compares
+  `.chunks` the same way: a `BitArray` holds the unused bits of its final word at zero.
+  Length is part of the identity because masks over different taxon counts can hold equal
+  words — without it, a lookup with a wrong-length mask would silently succeed.
+
+  `Splits.lengths` is now a `Dict{SplitKey,Float64}`, and the four set operations are
+  written out over `SplitKey` sets instead of delegating to Base's vector versions,
+  preserving both their results and their ordering. `getindex`/`get`/`haskey` convert
+  whatever `AbstractVector{Bool}` a caller passes, so a `Vector{Bool}` still finds the same
+  split a `BitVector` does.
+
+  **The measured gap this closes**, at n=1000: `hash` of one mask 1.383 µs against 16.074 ns
+  for its 16 chunk words (86×); 997 `Dict` lookups 1.388 ms, essentially pure hashing.
+  A single `InfoRobinsonFoulds` comparison went 20.187 ms → 5.046 ms, of which
+  `intersect` went 7.669 ms → 78.5 µs (98×) and building one tree's splits 5.698 ms →
+  1.882 ms. Note that the earlier "Split representation at scale" entry proposed packing
+  splits into a `UInt64` for n ≤ 64; hashing the words a `BitVector` already carries turns
+  out to get the same effect at any n, with no change of representation.
+
+  **`InfoRobinsonFoulds` against `TreeDist::InfoRobinsonFoulds`** after both CHUNK-034 and
+  this chunk — faster at every size measured, having been slower at n=200 and n=1000 before
+  either:
+
+  | taxa | at CHUNK-033 | + CHUNK-034 | + CHUNK-035 | TreeDist | ratio now |
+  |-----:|-------------:|------------:|------------:|---------:|----------:|
+  | 10 | 13.0 µs | 11.4 µs | 10.3 µs | 118.0 µs | 11.4× faster |
+  | 50 | 158.6 µs | 101.5 µs | 62.9 µs | 306.8 µs | 4.9× faster |
+  | 200 | 1.94 ms | 1.08 ms | 370.7 µs | 1.03 ms | 2.8× faster |
+  | 1000 | 44.03 ms | 21.11 ms | 4.77 ms | 7.45 ms | 1.6× faster |
+
+  Every split-based metric shares the change. `JaccardRobinsonFoulds` moved from
+  1.3×/2.6×/2.8× slower to 1.1×/1.9×/2.3× slower at n=50/200/1000 with no change to the
+  assignment solver, and all-pairs Robinson-Foulds from 4.1× to 3.7× slower.
+  `RobinsonFoulds` on a single pair is unaffected, as it goes through the cluster table
+  rather than `Splits`.
+
+  Building the split sets is now the dominant term at n=1000 (1.88 ms of 4.77 ms), most of
+  it the tree walk's per-branch allocation rather than any lookup — the next place to look
+  if this metric needs to get faster still.
 
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
@@ -1342,6 +1431,8 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-19 CHUNK-011 assignment solver replaced with full Jonker-Volgenant → next: CHUNK-012
 - 2026-08-20 CHUNK-013 (split-information-primitives) → next: CHUNK-033
 - 2026-08-20 CHUNK-033 (info-robinson-foulds) → next: CHUNK-034
+- 2026-08-20 CHUNK-034 (split-information-table) → next: CHUNK-035
+- 2026-08-20 CHUNK-035 (split-word-hashing) → next: CHUNK-014/015/020/030/031, any order
 
 ## Open Questions
 
@@ -1384,9 +1475,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
   not a real floating-point degeneracy any exact-arithmetic port needs too. Caught by this
   package's own brute-force test suite as a hang, not a wrong answer, before it shipped.
 
-  Packing splits into `UInt64` words remains a separate, not-yet-measured idea, worth
-  revisiting once more split-matching metrics (CHUNK-012 onward) exist to benchmark
-  together.
+  **Measured and resolved (2026-08-20, CHUNK-035).** The `O(n)` factor was real but came
+  from `hash`/`isequal` walking a `BitVector` elementwise, not from the representation
+  itself: at n=1000, hashing one mask cost 1.383 µs against 16.074 ns for the 16 words
+  already backing it. Hashing those words (`SplitKey`, `src/splits.jl`) removed the factor
+  without changing how a split is stored, and without the n ≤ 64 ceiling packing into a
+  single `UInt64` would have imposed.
 - **Trees with fewer than three taxa.** `isrooted` throws for a root with <2 children, so
   such trees are currently rejected at the first metric call. Whether that is the right
   behavior for every metric belongs to the edge-case audit in CHUNK-023.
