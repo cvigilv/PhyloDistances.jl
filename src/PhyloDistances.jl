@@ -54,13 +54,15 @@ export NyeSimilarity, JaccardRobinsonFoulds
 export colwise, colwise!, evaluate, pairwise, pairwise!, result_type
 export readnw
 
-public branchlength, convention, incidencematrix, isnormalized, isrooted, issimilarity,
-    istrivial, nni!, normalization, normalizer, normalizerinfo, requiresrooted,
-    splitmatching, taxonlabel, taxonlabels
+public branchlength, clusteringentropy, convention, incidencematrix, isnormalized,
+    isrooted, issimilarity, istrivial, jointentropy, log2rooted, log2unrooted,
+    mutualinformation, nni!, normalization, normalizer, normalizerinfo, requiresrooted,
+    splitinfo, splitmatching, taxonlabel, taxonlabels
 
 include("taxa.jl")
 include("random.jl")
 include("splits.jl")
+include("information.jl")
 include("clustertable.jl")
 include("assignment.jl")
 include("interface.jl")
