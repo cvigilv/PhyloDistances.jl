@@ -14,12 +14,14 @@ rooted against unrooted, and identical against maximally different,
 alongside random trees.
 
 - Julia 1.12.6, TreeDist 2.14.1 | Quartet 1.3.0 | ape 5.8.1 | R 4.4.2
-- Cases compared: 2140
+- Cases compared: 1140
 
 | quantity | reference | comparison | mismatches |
 |---|---|---|---:|
 | `RobinsonFoulds()` | TreeDist | exact integer | 0 |
 | `RobinsonFoulds(normalize = true)` | TreeDist | bitwise float | 0 |
+| `InfoRobinsonFoulds()` | TreeDist | float, tolerance 1e-6 | 0 |
+| `InfoRobinsonFoulds(normalize = true)` | TreeDist | float, tolerance 1e-6 | 0 |
 | `QuartetDistance()` | Quartet | exact integer | 0 |
 | quartet count `Q` | Quartet | exact integer | 0 |
 | `QuartetDistance(normalize = true)` | Quartet | bitwise float | 0 |

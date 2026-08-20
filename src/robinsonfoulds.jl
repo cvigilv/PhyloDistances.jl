@@ -109,3 +109,49 @@ function _weightedsplits(tree, index::TaxonIndex)
     ))
     return s
 end
+
+"""
+    InfoRobinsonFoulds(; convention = :treedist, normalize = false)
+
+The information-corrected Robinson-Foulds distance: [`RobinsonFoulds`](@ref) with each
+split weighted by its phylogenetic information content rather than counted as one.
+
+Splits are matched by exact identity between the two trees — the same relationship
+`RobinsonFoulds` already computes as a symmetric difference of sets, not an optimal
+matching between dissimilar splits. The distance is the two trees' combined split
+information, [`splitinfo`](@ref) summed over each tree's own non-trivial splits, minus
+twice the information of the splits they share: a split identical in both trees costs
+nothing, and one present in only one tree costs its full information. A split shared by
+chance alone carries little information and so costs little to disagree about, while an
+improbable split costs a lot.
+
+With `normalize = true` the result is divided by the two trees' combined split
+information, mirroring [`RobinsonFoulds`](@ref)'s own normalizer (split count becomes
+information content).
+
+Both conventions compute the same value; the definition is not in dispute.
+
+Smith, M.R. (2020). *Information theoretic Generalized Robinson-Foulds metrics for
+comparing phylogenetic trees.* Bioinformatics 36(20): 5007–5013. §2.1.
+"""
+struct InfoRobinsonFoulds{C<:Convention,N} <: TreeMetric
+    convention::C
+    normalize::N
+end
+
+InfoRobinsonFoulds(; convention = TreeDistConvention(), normalize = false) =
+    InfoRobinsonFoulds(Convention(convention), normalize)
+
+# A tree's total split information -- TreeDist's `SplitwiseInfo`, which is both this
+# metric's own scale and its normalizer.
+_splitwiseinfo(s::Splits) = sum(splitinfo, s; init = 0.0)
+
+function _compare(::InfoRobinsonFoulds, ::Convention, t1, t2)
+    index = taxonindex(t1, t2)
+    s1, s2 = splits(t1, index), splits(t2, index)
+    sharedinfo = sum(splitinfo, intersect(s1, s2); init = 0.0)
+    return _splitwiseinfo(s1) + _splitwiseinfo(s2) - 2 * sharedinfo
+end
+
+normalizerinfo(::InfoRobinsonFoulds, ::Convention, tree) =
+    _splitwiseinfo(splits(tree, taxonindex(tree)))

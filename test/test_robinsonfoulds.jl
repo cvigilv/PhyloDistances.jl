@@ -1,6 +1,6 @@
 using Logging: Logging
 using PhyloDistances
-using PhyloDistances: isnormalized, normalizerinfo
+using PhyloDistances: isnormalized, normalizerinfo, splitinfo
 using Random: Xoshiro
 using Test
 
@@ -167,5 +167,97 @@ end
 
     @testset "result type" begin
         @test result_type(WeightedRobinsonFoulds(), Any, Any) === Float64
+    end
+end
+
+@testset "InfoRobinsonFoulds" begin
+    @testset "hand-computed value for a five-taxon pair" begin
+        # Each tree has exactly one non-trivial split ({C,D} vs {C,E}), and the two
+        # differ, so nothing is shared and the distance is the sum of both trees' split
+        # information.
+        t1, t2 = readnw("(A,B,((C,D),E));"), readnw("(A,B,((C,E),D));")
+        @test InfoRobinsonFoulds()(t1, t2) ≈ 2 * splitinfo(2, 5)
+    end
+
+    @testset "identical trees are at distance zero" begin
+        tree = randomtree(Xoshiro(2), 12)
+        @test InfoRobinsonFoulds()(tree, tree) == 0.0
+        @test InfoRobinsonFoulds(; normalize = true)(tree, tree) == 0.0
+    end
+
+    @testset "a star tree costs the resolved tree's full split information" begin
+        star = readnw("(A,B,C,D,E,F,G);")
+        resolved = readnw("(A,B,(((C,D),E),F),G);")
+        @test InfoRobinsonFoulds()(star, resolved) ≈
+              normalizerinfo(InfoRobinsonFoulds(), TreeDistConvention(), resolved)
+    end
+
+    @testset "trees sharing no split sum their split information" begin
+        t1 = readnw("(A,B,(((C,D),E),F));")
+        t2 = readnw("(A,C,(((B,E),D),F));")
+        expected = normalizerinfo(InfoRobinsonFoulds(), TreeDistConvention(), t1) +
+                   normalizerinfo(InfoRobinsonFoulds(), TreeDistConvention(), t2)
+        @test InfoRobinsonFoulds()(t1, t2) ≈ expected
+        @test InfoRobinsonFoulds(; normalize = true)(t1, t2) == 1.0
+    end
+
+    @testset "a rooted tree matches its unrooted twin exactly" begin
+        # Unlike WeightedRobinsonFoulds, no branch length is summed here, so the two
+        # rootings agree bitwise rather than only to floating-point tolerance.
+        rooted = readnw("((A,B),(C,D));")
+        unrooted = readnw("(A,B,(C,D));")
+        got = @test_logs min_level = Logging.Error InfoRobinsonFoulds()(rooted, unrooted)
+        @test got == 0.0
+    end
+
+    @testset "branch lengths are ignored" begin
+        @test InfoRobinsonFoulds()(
+            readnw("(A:1,B:1,(C:1,D:1):1);"), readnw("(A:9,B:8,(C:7,D:6):5);")
+        ) == 0.0
+    end
+
+    @testset "zero exactly where RobinsonFoulds is zero, positive where it isn't" begin
+        rng = Xoshiro(9)
+        for _ in 1:20
+            t1 = randomtree(rng, rand(rng, 4:15))
+            t2 = perturb(rng, t1, rand(rng, 0:3))
+            rf = RobinsonFoulds()(t1, t2)
+            irf = InfoRobinsonFoulds()(t1, t2)
+            @test (rf == 0) == (irf == 0.0)
+            @test irf >= 0.0
+        end
+    end
+
+    @testset "symmetry" begin
+        rng = Xoshiro(10)
+        tree = randomtree(rng, 15)
+        other = perturb(rng, tree, 8)
+        @test InfoRobinsonFoulds()(tree, other) == InfoRobinsonFoulds()(other, tree)
+    end
+
+    @testset "normalization" begin
+        t1, t2 = readnw("(A,B,((C,D),E));"), readnw("(A,B,((C,E),D));")
+        expected = normalizerinfo(InfoRobinsonFoulds(), TreeDistConvention(), t1) +
+                   normalizerinfo(InfoRobinsonFoulds(), TreeDistConvention(), t2)
+        @test InfoRobinsonFoulds(; normalize = true)(t1, t2) ≈
+              InfoRobinsonFoulds()(t1, t2) / expected
+        @test !isnormalized(InfoRobinsonFoulds())
+    end
+
+    @testset "result type" begin
+        @test result_type(InfoRobinsonFoulds(), Any, Any) === Float64
+        @test result_type(InfoRobinsonFoulds(; normalize = true), Any, Any) === Float64
+    end
+
+    @testset "both conventions agree" begin
+        t1, t2 = readnw("(A,B,((C,D),E));"), readnw("(A,B,((C,E),D));")
+        @test InfoRobinsonFoulds(; convention = :primary)(t1, t2) ==
+              InfoRobinsonFoulds(; convention = :treedist)(t1, t2)
+    end
+
+    @testset "mismatched taxa are rejected" begin
+        @test_throws "trees span different taxa" begin
+            InfoRobinsonFoulds()(readnw("(A,B,(C,D));"), readnw("(A,B,(C,E));"))
+        end
     end
 end

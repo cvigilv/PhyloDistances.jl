@@ -44,7 +44,7 @@ export Convention, TreeDistConvention, PrimaryConvention
 export TaxonIndex, taxa, taxonindex
 export Splits, splits
 export randomtree, perturb
-export RobinsonFoulds, WeightedRobinsonFoulds
+export RobinsonFoulds, WeightedRobinsonFoulds, InfoRobinsonFoulds
 export QuartetDistance
 export NyeSimilarity, JaccardRobinsonFoulds
 

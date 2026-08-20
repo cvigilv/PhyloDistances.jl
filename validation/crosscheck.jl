@@ -138,6 +138,8 @@ function setupR()
       st <- Quartet::QuartetStatus(c(t1, t2))[2, ]
       c(rf      = TreeDist::RobinsonFoulds(t1, t2),
         rfnorm  = TreeDist::RobinsonFoulds(t1, t2, normalize = TRUE),
+        irf     = TreeDist::InfoRobinsonFoulds(t1, t2),
+        irfnorm = TreeDist::InfoRobinsonFoulds(t1, t2, normalize = TRUE),
         Q       = st[["Q"]],
         d       = st[["d"]],
         r1      = st[["r1"]],
@@ -184,12 +186,14 @@ implementations agree — and whether the reference normalized Robinson-Foulds w
 neither tree carries a split and the divisor is zero.
 """
 function checkpair(t1, t2, label, nw1, nw2)
-    rf, rfnorm, q, d, r1, r2, nye, nyenorm, refjrf, refjrfk2, refjrfnorm =
+    rf, rfnorm, irf, irfnorm, q, d, r1, r2, nye, nyenorm, refjrf, refjrfk2, refjrfnorm =
         rcopy(R"compare($nw1, $nw2)")
-    jrf, jrfn, jq, jqn, jnye, jnyen, jjrf, jjrfk2, jjrfn = quiet() do
+    jrf, jrfn, jirf, jirfn, jq, jqn, jnye, jnyen, jjrf, jjrfk2, jjrfn = quiet() do
         (
             RobinsonFoulds()(t1, t2),
             RobinsonFoulds(; normalize = true)(t1, t2),
+            InfoRobinsonFoulds()(t1, t2),
+            InfoRobinsonFoulds(; normalize = true)(t1, t2),
             QuartetDistance()(t1, t2),
             QuartetDistance(; normalize = true)(t1, t2),
             NyeSimilarity()(t1, t2),
@@ -207,6 +211,17 @@ function checkpair(t1, t2, label, nw1, nw2)
         isnan(jrfn) || push!(bad, :rfnorm => "$label: R=NaN here=$(repr(jrfn))")
     else
         jrfn === rfnorm || push!(bad, :rfnorm => "$label: R=$(repr(rfnorm)) here=$(repr(jrfn))")
+    end
+
+    # TreeDist floors InfoRobinsonFoulds near zero (`.FloorNumericalNoise`), which this
+    # package's formula does not attempt to reproduce bit-for-bit, so these are compared
+    # to a tolerance like the split-matching quantities below rather than exactly.
+    _closeenough(jirf, irf) || push!(bad, :irf => "$label: R=$(repr(irf)) here=$(repr(jirf))")
+    if isnan(irfnorm)
+        isnan(jirfn) || push!(bad, :irfnorm => "$label: R=NaN here=$(repr(jirfn))")
+    else
+        _closeenough(jirfn, irfnorm) ||
+            push!(bad, :irfnorm => "$label: R=$(repr(irfnorm)) here=$(repr(jirfn))")
     end
 
     # A quartet that only one tree resolves counts as a difference here, so the reference
@@ -238,6 +253,8 @@ end
 const QUANTITIES = [
     :rf => ("`RobinsonFoulds()`", "TreeDist", "exact integer"),
     :rfnorm => ("`RobinsonFoulds(normalize = true)`", "TreeDist", "bitwise float"),
+    :irf => ("`InfoRobinsonFoulds()`", "TreeDist", "float, tolerance 1e-6"),
+    :irfnorm => ("`InfoRobinsonFoulds(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
     :quartet => ("`QuartetDistance()`", "Quartet", "exact integer"),
     :quartetq => ("quartet count `Q`", "Quartet", "exact integer"),
     :quartetnorm => ("`QuartetDistance(normalize = true)`", "Quartet", "bitwise float"),
