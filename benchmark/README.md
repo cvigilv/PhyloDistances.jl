@@ -236,31 +236,73 @@ speed only.
 
 ### Clustering information
 
-| metric | taxa | PhyloDistances | TreeDist | ratio |
-|:-------|-----:|---------------:|---------:|------:|
-| MCI | 10 | 10.8 µs | 45.1 µs | 4.2× faster |
-| MCI | 50 | 106.1 µs | 57.0 µs | 1.9× slower |
-| MCI | 200 | 1.33 ms | 214.0 µs | 6.2× slower |
-| MCI | 1000 | 48.66 ms | 5.89 ms | 8.3× slower |
-| CID | 10 | 11.0 µs | 101.8 µs | 9.3× faster |
-| CID | 50 | 105.0 µs | 119.0 µs | 1.1× faster |
-| CID | 200 | 1.33 ms | 335.9 µs | 4.0× slower |
-| CID | 1000 | 48.31 ms | 7.64 ms | 6.3× slower |
+The matching pipeline now removes exact split pairs before it builds the dense score matrix,
+and it reads every logarithm in the remaining mutual-information loop from a `log2(0:n)`
+table. MCI and CID use the same reduced assignment. CID also uses the table for its tree
+entropy sums.
 
-This is the current performance problem. Both Julia metrics agree with TreeDist on every
-benchmarked value, but the advantage from low call overhead disappears by 50 taxa. At 1000
-taxa MCI is 8.3 times slower and CID is 6.3 times slower.
+#### MCI before and after
 
-MCI allocates the same 10.42 MB in the same 36,161 allocations as JRF at 1000 taxa, yet it
-takes 48.66 ms against JRF's 22.04 ms. Its score-matrix loop computes mutual information,
-including logarithms, where JRF computes Jaccard ratios. TreeDist's MCI implementation uses
-a lookup table for integer logarithms and removes exactly shared splits before constructing
-the assignment problem. This Julia implementation does neither yet. Those are candidates
-to profile before changing the algorithm.
+| taxa | before | after | speedup | alloc before | alloc after | TreeDist before / after | ratio before | ratio after |
+|-----:|-------:|------:|--------:|-------------:|------------:|------------------------:|-------------:|------------:|
+| 10 | 10.8 µs | 9.8 µs | 1.1× | 0.01 MB / 390 | 0.01 MB / 407 | 45.1 / 42.9 µs | 4.2× faster | 4.4× faster |
+| 50 | 106.1 µs | 60.9 µs | 1.7× | 0.11 MB / 1,877 | 0.09 MB / 1,897 | 57.0 / 56.0 µs | 1.9× slower | 1.1× slower |
+| 200 | 1.33 ms | 271.1 µs | 4.9× | 0.73 MB / 7,309 | 0.41 MB / 7,330 | 214.0 / 211.0 µs | 6.2× slower | 1.3× slower |
+| 1000 | 48.66 ms | 2.62 ms | 18.6× | 10.42 MB / 36,161 | 2.89 MB / 36,177 | 5.89 / 5.81 ms | 8.3× slower | 2.2× faster |
 
-CID adds two tree-entropy sums after computing MCI, which costs almost nothing in Julia.
-TreeDist's CID wrapper has more overhead, so CID's ratio looks less bad even though both
-Julia calls take the same time.
+#### CID before and after
+
+| taxa | before | after | speedup | alloc before | alloc after | TreeDist before / after | ratio before | ratio after |
+|-----:|-------:|------:|--------:|-------------:|------------:|------------------------:|-------------:|------------:|
+| 10 | 11.0 µs | 9.5 µs | 1.2× | 0.01 MB / 392 | 0.01 MB / 409 | 101.8 / 98.9 µs | 9.3× faster | 10.4× faster |
+| 50 | 105.0 µs | 57.4 µs | 1.8× | 0.11 MB / 1,879 | 0.09 MB / 1,899 | 119.0 / 120.9 µs | 1.1× faster | 2.1× faster |
+| 200 | 1.33 ms | 272.6 µs | 4.9× | 0.73 MB / 7,311 | 0.41 MB / 7,332 | 335.9 / 302.1 µs | 4.0× slower | 1.1× faster |
+| 1000 | 48.31 ms | 2.64 ms | 18.3× | 10.42 MB / 36,163 | 2.89 MB / 36,179 | 7.64 / 6.19 ms | 6.3× slower | 2.3× faster |
+
+Allocation counts rise by 16 to 21 small objects because the reduced path records unmatched
+indices and builds the logarithm table. Allocated bytes fall by 72% at 1000 taxa because the
+score matrix and assignment scratch space shrink from 997 by 997 to 193 by 193 on this
+seeded pair.
+
+#### What the profile showed
+
+Before editing, the 200-taxon call took 1.36 ms. Split extraction took 83.0 µs, the full
+score matrix 746.2 µs, and assignment 342.5 µs. At 1000 taxa the corresponding figures were
+48.55 ms end to end, 520.7 µs for split extraction, 24.01 ms for the score matrix, and
+21.71 ms for assignment. Taxon indexing added 160.7 µs and 813.2 µs at the two sizes.
+
+The score loop was mostly logarithms. Building only the contingency counts took 98.2 µs at
+200 taxa and 8.74 ms at 1000. Scoring precomputed counts took another 576.6 µs and 13.81 ms,
+while the same loop with only integer arithmetic took 5.3 µs and 116.0 µs. This ruled out
+population counting as the main arithmetic problem.
+
+The two changes were benchmarked separately on pre-extracted splits:
+
+| matching pipeline | 200 taxa | 1000 taxa |
+|:------------------|---------:|----------:|
+| original | 1.086 ms | 46.83 ms |
+| integer-log table only | 597.2 µs | 34.68 ms |
+| exact-match removal only | 62.0 µs | 1.72 ms |
+| both | 37.0 µs | 1.29 ms |
+| both, without redundant bounds checks | 32.6 µs | 1.22 ms |
+
+Exact-match removal is the larger win on these perturbed pairs. They share 152 of 197 splits
+at 200 taxa and 804 of 997 at 1000. The logarithm table still matters when few splits match,
+and it cuts another quarter from the reduced 1000-taxon pipeline here. The initial profile
+also attributed samples to bounds checks in the score loop. Removing checks only where the
+matrix axes and contingency-count range prove every access valid cut the reduced matrix by
+11% at 1000 taxa and the full call by about 3%.
+
+After these changes, the 1000-taxon call spends about 0.80 ms indexing taxa, 0.52 ms extracting
+splits, 0.08 ms identifying exact matches, 0.46 ms constructing the reduced score matrix,
+and 0.73 ms solving the reduced assignment. No single local score-loop change dominates any
+longer. Further gains require faster shared tree preprocessing or changes to the assignment
+solver, both used outside MCI and CID.
+
+Self-comparisons still use the same table-backed entropy expression for the exact score and
+the normalizer. Raw MCI therefore equals tree entropy exactly, normalized MCI is exactly
+one, and CID is exactly zero. The full 1,140-case cross-check still reports zero mismatches
+against TreeDist 2.14.1.
 
 ### Info-Robinson-Foulds
 

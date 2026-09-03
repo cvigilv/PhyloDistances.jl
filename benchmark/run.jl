@@ -389,10 +389,10 @@ function report(
             row.megabytes, row.allocs, agree)
     end
 
-    println(io, "\nMutual clustering information and clustering information distance use")
-    println(io, "the same mutual-information score matrix and assignment solve. CID adds")
-    println(io, "the two trees' entropy totals after finding MCI, so their timings should")
-    println(io, "be nearly identical. `agree` uses the generalized-RF tolerance described")
+    println(io, "\nMutual clustering information and clustering information distance remove")
+    println(io, "the same exact split pairs, then use the same mutual-information score matrix")
+    println(io, "and assignment solve for the remainder. CID adds the two trees' entropy totals,")
+    println(io, "so their timings should be nearly identical. `agree` uses the tolerance described")
     println(io, "for Jaccard-Robinson-Foulds above.\n")
     clusteringsection(io, "Mutual clustering information", "mci", clusteringinfo, rclusteringinfo)
     clusteringsection(io, "Clustering information distance", "cid", clusteringinfo, rclusteringinfo)

@@ -470,11 +470,17 @@ Produce these live in the MCP Julia session and let them go when it exits.
   rooted-tree counts or double factorials. Their fast path precomputes split sizes and uses
   packed-word intersections instead. Future clustering-information code should not build a
   `SplitInfoTable` unless it also computes phylogenetic information.
-- 2026-09-03 (CHUNK-014 benchmark): MCI and CID are currently 8.3× and 6.3× slower than
-  TreeDist at 1000 taxa. Allocation matches JRF almost exactly, but MCI takes over twice as
-  long. TreeDist tables integer logarithms and removes exact split matches before building
-  the assignment problem; this implementation currently does neither. Profile both before
-  choosing the fix.
+- 2026-09-03 (CHUNK-014 benchmark): MCI and CID were initially 8.3× and 6.3× slower than
+  TreeDist at 1000 taxa. Allocation matched JRF almost exactly, but MCI took over twice as
+  long. CHUNK-036 confirmed that integer logarithms and the unreduced assignment caused the
+  gap, then addressed both.
+- 2026-09-04 (CHUNK-036): An exact split pair can always be fixed in some optimal MCI
+  matching. For one displaced partner this follows from `MI(A, X) <= H(A)`; for two it
+  follows from the triangle inequality for variation of information. Removing all exact
+  pairs before matrix construction reduced the seeded 1000-taxon problem from 997×997 to
+  193×193. MCI/CID code must keep exact-pair entropy and tree entropy on the same arithmetic
+  path so raw self-MCI, normalized self-MCI, and self-CID remain exactly `H`, `1.0`, and
+  `0.0`.
 
 ## Chunks
 
@@ -1487,15 +1493,44 @@ Produce these live in the MCP Julia session and let them go when it exits.
   table `log2(0:n)` for the mutual-information score loop, and remove exactly shared splits
   before constructing and solving the remaining assignment problem. Keep the formula and
   public API unchanged.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-014
 - **Verification strategy**: Preserve the full 7824-test pass and the 1,140-case TreeDist
   cross-check with zero mismatches. Re-run `benchmark/run.jl` on the same seeded tree files;
   report before/after timing, allocation and TreeDist ratio at every size. Profile before
   editing and retain only changes tied to measured hot spots.
-- **Notes**: Baseline at 10/50/200/1000 taxa: MCI 10.8 µs / 106.1 µs / 1.33 ms / 48.66 ms,
-  CID 11.0 µs / 105.0 µs / 1.33 ms / 48.31 ms. TreeDist takes 45.1 µs / 57.0 µs /
-  214.0 µs / 5.89 ms for MCI and 101.8 µs / 119.0 µs / 335.9 µs / 7.64 ms for CID.
+- **Notes**: The baseline profile separated taxon indexing, split extraction, contingency
+  counting, logarithmic scoring, matrix construction and assignment. At 1000 taxa the
+  48.55 ms call spent 24.01 ms building the score matrix and 21.71 ms in assignment; split
+  extraction was 0.52 ms. Scoring precomputed contingency counts took 13.81 ms, against
+  0.12 ms for the same loop with only integer arithmetic, confirming that logarithms were
+  the score-loop hot spot.
+
+  Both proposed changes earned their place independently. On pre-extracted splits at
+  200/1000 taxa, the original matching pipeline took 1.086/46.83 ms, integer-log lookup
+  alone took 0.597/34.68 ms, exact-match removal alone took 0.062/1.72 ms, and both took
+  0.037/1.29 ms. Removing redundant bounds checks from the proven-safe score loop then took
+  the combined pipeline to 0.033/1.22 ms. The seeded pairs shared 152 of 197 and 804 of 997
+  splits, so exact removal shrank the two assignment problems to 45×45 and 193×193. Exact
+  matches contribute their
+  entropy directly. The remaining matrix uses a `log2(0:n)` table and hoists marginal log
+  terms by row and column. CID shares that table with both tree-entropy sums.
+
+  Final MCI timings at 10/50/200/1000 taxa are 9.8 µs / 60.9 µs / 271.1 µs / 2.62 ms;
+  CID takes 9.5 µs / 57.4 µs / 272.6 µs / 2.64 ms. At 1000 taxa these are 18.6× and 18.3×
+  faster than the original code, and 2.2× and 2.3× faster than TreeDist. Allocation fell
+  from 10.42 MB to 2.89 MB, while object counts rose by about 17 because the code now records
+  unmatched indices and builds a small log table. MCI remains 1.3× slower than TreeDist at
+  200 taxa, where taxon indexing plus split extraction takes about 0.24 ms and now dominates
+  the 0.27 ms call.
+
+  Tests compare every lookup-table matrix cell with the standalone mutual-information
+  formula and compare exact-reduced matching with the full assignment optimum on seeded
+  trees. The full suite passes 9,224/9,224. Raw and normalized MCI/CID retain exact self
+  behavior and the full 1,140-case TreeDist cross-check reports zero mismatches. The full
+  seeded Julia/R benchmark agrees on every reported value. Detailed phase and before/after
+  tables are in `benchmark/README.md`; generated current timings are in
+  `benchmark/results.md`.
 
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
@@ -1517,6 +1552,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-20 CHUNK-034 (split-information-table) → next: CHUNK-035
 - 2026-08-20 CHUNK-035 (split-word-hashing) → next: CHUNK-014/015/020/030/031, any order
 - 2026-09-03 CHUNK-014 (clustering-information-metrics) → next: CHUNK-036
+- 2026-09-04 CHUNK-036 (clustering-information-performance) → next: CHUNK-015
 
 ## Open Questions
 

@@ -1,5 +1,6 @@
 using PhyloDistances
-using PhyloDistances: clusteringentropy, mutualinformation, normalizerinfo
+using PhyloDistances: _matchtotal, _mutualinformationscorematrix, clusteringentropy,
+    mutualinformation, normalizerinfo
 using Random: Xoshiro
 using Test
 
@@ -74,6 +75,40 @@ end
                 mci / ((h1 + h2) / 2)
             @test ClusteringInfoDistance(; normalize = true)(t1, t2) ≈
                 (h1 + h2 - 2 * mci) / (h1 + h2)
+        end
+    end
+
+    @testset "exact split removal preserves the full assignment optimum" begin
+        rng = Xoshiro(3614)
+        sawshared = false
+        for _ in 1:20
+            n = rand(rng, 6:15)
+            t1 = randomtree(rng, n)
+            t2 = perturb(rng, t1, rand(rng, 1:n))
+            index = taxonindex(t1, t2)
+            s1, s2 = splits(t1, index), splits(t2, index)
+            pairscore = _mutualinformationscorematrix(s1, s2, n)
+
+            for j in axes(pairscore, 2), i in axes(pairscore, 1)
+                @test pairscore[i, j] ≈ mutualinformation(s1.masks[i], s2.masks[j]) atol = 1.0e-14
+            end
+
+            fullscore = _matchtotal(pairscore; maximize = true).score
+            reducedscore = MutualClusteringInfo()(t1, t2)
+            @test reducedscore ≈ fullscore atol = 1.0e-12
+            sawshared |= !isempty(intersect(s1, s2))
+        end
+        @test sawshared
+
+        resolved = readnw("(A,B,(((C,D),E),F),G);")
+        partial = readnw("(A,B,((C,D),E,F),G);")
+        for (t1, t2) in ((resolved, partial), (partial, resolved))
+            index = taxonindex(t1, t2)
+            s1, s2 = splits(t1, index), splits(t2, index)
+            @test length(intersect(s1, s2)) == min(length(s1), length(s2))
+            pairscore = _mutualinformationscorematrix(s1, s2, length(index))
+            fullscore = _matchtotal(pairscore; maximize = true).score
+            @test MutualClusteringInfo()(t1, t2) ≈ fullscore atol = 1.0e-12
         end
     end
 
