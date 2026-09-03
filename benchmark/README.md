@@ -1,10 +1,10 @@
 # Benchmarks
 
 Compares this package against the R packages whose values it reproduces —
-[TreeDist](https://github.com/ms609/TreeDist) for Robinson-Foulds, Jaccard-Robinson-Foulds
-and Info-Robinson-Foulds, and [Quartet](https://github.com/ms609/Quartet) for the quartet
-distance — so that agreeing on results does not quietly cost an order of magnitude in
-speed.
+[TreeDist](https://github.com/ms609/TreeDist) for Robinson-Foulds, Jaccard-Robinson-Foulds,
+Info-Robinson-Foulds, mutual clustering information and clustering information distance,
+and [Quartet](https://github.com/ms609/Quartet) for the quartet distance — so that agreeing
+on results does not quietly cost an order of magnitude in speed.
 
 ## Running
 
@@ -13,9 +13,9 @@ $ julia --project=benchmark benchmark/run.jl
 ```
 
 `run.jl` writes Newick files to `benchmark/trees/`, benchmarks this package, invokes
-`treedist.R`, `quartet.R`, `jrf.R` and `inforf.R` on the same files, and renders
-`results.md`. R is optional — without a working `Rscript` the Julia timings are reported
-alone.
+`treedist.R`, `quartet.R`, `jrf.R`, `inforf.R` and `clusteringinfo.R` on the same files,
+and renders `results.md`. R is optional — without a working `Rscript` the Julia timings are
+reported alone.
 
 **A full run takes well under a minute** on the Julia side; most of the wall clock goes to R,
 repeating its calls until the clock's resolution stops mattering.
@@ -233,6 +233,34 @@ quantized for its integer solver — so the two can differ in the last few signi
 digits even when both found the true optimum. See `validation/crosscheck.jl`'s
 `_closeenough` and its validation report for the correctness case; this section is about
 speed only.
+
+### Clustering information
+
+| metric | taxa | PhyloDistances | TreeDist | ratio |
+|:-------|-----:|---------------:|---------:|------:|
+| MCI | 10 | 10.8 µs | 45.1 µs | 4.2× faster |
+| MCI | 50 | 106.1 µs | 57.0 µs | 1.9× slower |
+| MCI | 200 | 1.33 ms | 214.0 µs | 6.2× slower |
+| MCI | 1000 | 48.66 ms | 5.89 ms | 8.3× slower |
+| CID | 10 | 11.0 µs | 101.8 µs | 9.3× faster |
+| CID | 50 | 105.0 µs | 119.0 µs | 1.1× faster |
+| CID | 200 | 1.33 ms | 335.9 µs | 4.0× slower |
+| CID | 1000 | 48.31 ms | 7.64 ms | 6.3× slower |
+
+This is the current performance problem. Both Julia metrics agree with TreeDist on every
+benchmarked value, but the advantage from low call overhead disappears by 50 taxa. At 1000
+taxa MCI is 8.3 times slower and CID is 6.3 times slower.
+
+MCI allocates the same 10.42 MB in the same 36,161 allocations as JRF at 1000 taxa, yet it
+takes 48.66 ms against JRF's 22.04 ms. Its score-matrix loop computes mutual information,
+including logarithms, where JRF computes Jaccard ratios. TreeDist's MCI implementation uses
+a lookup table for integer logarithms and removes exactly shared splits before constructing
+the assignment problem. This Julia implementation does neither yet. Those are candidates
+to profile before changing the algorithm.
+
+CID adds two tree-entropy sums after computing MCI, which costs almost nothing in Julia.
+TreeDist's CID wrapper has more overhead, so CID's ratio looks less bad even though both
+Julia calls take the same time.
 
 ### Info-Robinson-Foulds
 

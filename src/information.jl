@@ -205,13 +205,23 @@ function mutualinformation(mask1::AbstractVector{Bool}, mask2::AbstractVector{Bo
     ))
     n == 0 && return 0.0
 
-    na, nb = count(mask1), count(mask2)
-    nA, nB = n - na, n - nb
-
     aandb = 0
     for i in eachindex(mask1, mask2)
         aandb += mask1[i] & mask2[i]
     end
+    return _mutualinformation(aandb, count(mask1), count(mask2), n)
+end
+
+# Mutual information from the sufficient statistics of a 2×2 contingency table. Tree
+# metrics evaluate every pair of splits, so they compute each split's marginal count once
+# and only recount the intersections. Equal and complementary masks describe the same
+# bipartition; answering those through the entropy formula makes MI(S, S) exact rather
+# than a last-ulp reconstruction through four contingency cells.
+function _mutualinformation(aandb::Integer, na::Integer, nb::Integer, n::Integer)
+    (aandb == na == nb || (aandb == 0 && na + nb == n)) &&
+        return clusteringentropy(na, n)
+
+    nA, nB = n - na, n - nb
     aandB = na - aandb
     Aandb = nb - aandb
     AandB = nA - Aandb

@@ -148,7 +148,11 @@ function setupR()
         nyenorm = TreeDist::NyeSimilarity(t1, t2, normalize = TRUE),
         jrf     = TreeDist::JaccardRobinsonFoulds(t1, t2),
         jrfk2   = TreeDist::JaccardRobinsonFoulds(t1, t2, k = 2, allowConflict = FALSE),
-        jrfnorm = TreeDist::JaccardRobinsonFoulds(t1, t2, normalize = TRUE))
+        jrfnorm = TreeDist::JaccardRobinsonFoulds(t1, t2, normalize = TRUE),
+        mci     = TreeDist::MutualClusteringInfo(t1, t2),
+        mcinorm = TreeDist::MutualClusteringInfo(t1, t2, normalize = TRUE),
+        cid     = TreeDist::ClusteringInfoDistance(t1, t2),
+        cidnorm = TreeDist::ClusteringInfoDistance(t1, t2, normalize = TRUE))
     }
     """
     return rcopy(R"""
@@ -167,14 +171,12 @@ quiet(f) = Logging.with_logger(f, Logging.SimpleLogger(stderr, Logging.Error))
 """
 Whether `a` and `b` agree closely enough to count as the same generalized-RF value.
 
-Unlike Robinson-Foulds and the quartet distance — exact integer or exact-rational counts —
-Nye similarity and Jaccard-Robinson-Foulds both reduce to an optimal assignment solved by
-two independently written solvers: this package's over exact `Float64` costs, TreeDist's
-over costs quantized to an `Int64` scaled by `BIG = typemax(Int64) ÷ SL_MAX_SPLITS` (its
-`inst/include/TreeDist/types.h`). That quantization step is on the order of `1/BIG`, far
-below `1e-9`, so a real disagreement shows up many orders of magnitude larger than this
-tolerance — it is not a concession on correctness, only on what "the same value" can mean
-when the reference itself does not compute one exactly.
+Unlike Robinson-Foulds and the quartet distance, the generalized-RF quantities reduce to
+an optimal assignment solved by two independently written solvers. This package uses exact
+`Float64` costs; TreeDist quantizes costs to an `Int64` scaled by
+`BIG = typemax(Int64) ÷ SL_MAX_SPLITS` in `inst/include/TreeDist/types.h`. TreeDist also
+floors numerical noise in its information distances. These effects are far below `1e-9`,
+so a real disagreement remains many orders of magnitude larger than this tolerance.
 """
 _closeenough(a, b) = (isnan(a) && isnan(b)) || isapprox(a, b; atol = 1e-9, rtol = 1e-6)
 
@@ -186,9 +188,11 @@ implementations agree — and whether the reference normalized Robinson-Foulds w
 neither tree carries a split and the divisor is zero.
 """
 function checkpair(t1, t2, label, nw1, nw2)
-    rf, rfnorm, irf, irfnorm, q, d, r1, r2, nye, nyenorm, refjrf, refjrfk2, refjrfnorm =
+    rf, rfnorm, irf, irfnorm, q, d, r1, r2, nye, nyenorm, refjrf, refjrfk2,
+        refjrfnorm, refmci, refmcinorm, refcid, refcidnorm =
         rcopy(R"compare($nw1, $nw2)")
-    jrf, jrfn, jirf, jirfn, jq, jqn, jnye, jnyen, jjrf, jjrfk2, jjrfn = quiet() do
+    jrf, jrfn, jirf, jirfn, jq, jqn, jnye, jnyen, jjrf, jjrfk2, jjrfn, jmci,
+        jmcin, jcid, jcidn = quiet() do
         (
             RobinsonFoulds()(t1, t2),
             RobinsonFoulds(; normalize = true)(t1, t2),
@@ -201,6 +205,10 @@ function checkpair(t1, t2, label, nw1, nw2)
             JaccardRobinsonFoulds()(t1, t2),
             JaccardRobinsonFoulds(; k = 2, allowconflict = false)(t1, t2),
             JaccardRobinsonFoulds(; normalize = true)(t1, t2),
+            MutualClusteringInfo()(t1, t2),
+            MutualClusteringInfo(; normalize = true)(t1, t2),
+            ClusteringInfoDistance()(t1, t2),
+            ClusteringInfoDistance(; normalize = true)(t1, t2),
         )
     end
     bad = Pair{Symbol,String}[]
@@ -246,6 +254,22 @@ function checkpair(t1, t2, label, nw1, nw2)
         push!(bad, :jrfk2 => "$label: R=$(repr(refjrfk2)) here=$(repr(jjrfk2))")
     _closeenough(jjrfn, refjrfnorm) ||
         push!(bad, :jrfnorm => "$label: R=$(repr(refjrfnorm)) here=$(repr(jjrfn))")
+    _closeenough(jmci, refmci) ||
+        push!(bad, :mci => "$label: R=$(repr(refmci)) here=$(repr(jmci))")
+    if isnan(refmcinorm)
+        isnan(jmcin) || push!(bad, :mcinorm => "$label: R=NaN here=$(repr(jmcin))")
+    else
+        _closeenough(jmcin, refmcinorm) ||
+            push!(bad, :mcinorm => "$label: R=$(repr(refmcinorm)) here=$(repr(jmcin))")
+    end
+    _closeenough(jcid, refcid) ||
+        push!(bad, :cid => "$label: R=$(repr(refcid)) here=$(repr(jcid))")
+    if isnan(refcidnorm)
+        isnan(jcidn) || push!(bad, :cidnorm => "$label: R=NaN here=$(repr(jcidn))")
+    else
+        _closeenough(jcidn, refcidnorm) ||
+            push!(bad, :cidnorm => "$label: R=$(repr(refcidnorm)) here=$(repr(jcidn))")
+    end
 
     return bad, isnan(rfnorm)
 end
@@ -263,6 +287,10 @@ const QUANTITIES = [
     :jrf => ("`JaccardRobinsonFoulds()`", "TreeDist", "float, tolerance 1e-6"),
     :jrfk2 => ("`JaccardRobinsonFoulds(k=2, allowconflict=false)`", "TreeDist", "float, tolerance 1e-6"),
     :jrfnorm => ("`JaccardRobinsonFoulds(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
+    :mci => ("`MutualClusteringInfo()`", "TreeDist", "float, tolerance 1e-6"),
+    :mcinorm => ("`MutualClusteringInfo(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
+    :cid => ("`ClusteringInfoDistance()`", "TreeDist", "float, tolerance 1e-6"),
+    :cidnorm => ("`ClusteringInfoDistance(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
 ]
 
 function main()
@@ -292,12 +320,11 @@ function main()
     io = IOBuffer()
     println(io, "# Agreement with TreeDist and Quartet\n")
     println(io, "Generated by `julia --project=validation validation/crosscheck.jl`.\n")
-    println(io, "Robinson-Foulds and the quartet distance are exact counts, compared exactly ")
-    println(io, "(integers with `==`, floats bitwise). Nye similarity and Jaccard-Robinson- ")
-    println(io, "Foulds reduce to an optimal assignment solved independently on each side — ")
-    println(io, "this package over exact `Float64` costs, TreeDist over costs quantized for ")
-    println(io, "its integer solver — so those are compared to a tolerance instead; see ")
-    println(io, "`_closeenough` in `crosscheck.jl`. Values cross from R through RCall as ")
+    println(io, "Robinson-Foulds and the quartet distance are exact counts, compared exactly")
+    println(io, "(integers with `==`, floats bitwise). The information and generalized-RF")
+    println(io, "quantities are compared to a tolerance because TreeDist floors numerical")
+    println(io, "noise and quantizes assignment costs for its integer solver; see")
+    println(io, "`_closeenough` in `crosscheck.jl`. Values cross from R through RCall as")
     println(io, "machine numbers, so nothing is routed through text. Cases cover trees with ")
     println(io, "no splits at all, maximal imbalance, polytomies on one and both sides, ")
     println(io, "rooted against unrooted, and identical against maximally different, ")

@@ -47,6 +47,7 @@ export randomtree, perturb
 export RobinsonFoulds, WeightedRobinsonFoulds, InfoRobinsonFoulds
 export QuartetDistance
 export NyeSimilarity, JaccardRobinsonFoulds
+export MutualClusteringInfo, ClusteringInfoDistance
 
 # Distances.jl is the interface these metrics implement, and NewickTree.jl reads the trees
 # they consume; re-exporting means a user loading those packages too sees one set of
@@ -70,5 +71,6 @@ include("splitmatching.jl")
 include("robinsonfoulds.jl")
 include("quartet.jl")
 include("generalizedrf.jl")
+include("clusteringinformation.jl")
 
 end

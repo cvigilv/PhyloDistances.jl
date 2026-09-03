@@ -461,6 +461,20 @@ Produce these live in the MCP Julia session and let them go when it exits.
   at n=1000. This is sound for the same reason Base's `==(::BitArray, ::BitArray)` compares
   `.chunks` directly (a `BitArray` holds its final word's unused bits at zero), and length
   belongs in the identity because masks over different taxon counts can hold equal words.
+- 2026-09-03 (CHUNK-014): TreeDist computes clustering information distance from the same
+  matching that maximizes mutual clustering information: `CID = H₁ + H₂ - 2 MCI`. It does
+  not solve a second assignment that minimizes pairwise variation of information. MCI's
+  default divisor is mean tree entropy, while CID's is summed tree entropy.
+- 2026-09-03 (CHUNK-014, correcting CHUNK-034's broad guidance): `SplitInfoTable` only
+  accelerates phylogenetic `splitinfo`; clustering entropy and mutual information do not use
+  rooted-tree counts or double factorials. Their fast path precomputes split sizes and uses
+  packed-word intersections instead. Future clustering-information code should not build a
+  `SplitInfoTable` unless it also computes phylogenetic information.
+- 2026-09-03 (CHUNK-014 benchmark): MCI and CID are currently 8.3× and 6.3× slower than
+  TreeDist at 1000 taxa. Allocation matches JRF almost exactly, but MCI takes over twice as
+  long. TreeDist tables integer logarithms and removes exact split matches before building
+  the assignment problem; this implementation currently does neither. Profile both before
+  choosing the fix.
 
 ## Chunks
 
@@ -994,11 +1008,41 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Description**: Mutual clustering information (MCI) and the clustering information
   distance (CID), as split-matching problems scored by the mutual information of the two
   splits' induced partitions, plus the normalizations TreeDist documents.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-010, CHUNK-013
 - **Verification strategy**: Identical trees → maximal MCI / zero CID; CID satisfies the
   metric axioms on random triples.
-- **Notes**:
+- **Notes**: Lives in `src/clusteringinformation.jl`, exporting `MutualClusteringInfo`
+  (`TreeSimilarity`) and `ClusteringInfoDistance` (`TreeMetric`). Both extract each tree's
+  non-trivial splits and maximize the summed `mutualinformation` over a one-to-one matching.
+  CID is derived from that same optimum as `H₁ + H₂ - 2 MCI`, where each `H` is the sum of
+  `clusteringentropy` over one tree's splits. An unmatched split therefore contributes zero
+  to MCI and its full entropy to CID.
+
+  The score matrix works over the packed `UInt64` words already used by JRF. It counts each
+  split's marginal size once, then computes only pairwise intersections inside the matrix
+  loop. `_mutualinformation` now accepts those sufficient counts internally; exact or
+  complementary partitions return `clusteringentropy` directly, making self-information
+  exact and giving identical trees exactly zero CID without numerical flooring.
+
+  TreeDist normalization was followed directly from `R/tree_distance_info.R`: MCI divides
+  by mean tree entropy, so identical trees normalize to 1; CID divides by summed tree
+  entropy. A zero-entropy pair, such as two star trees, retains the package-wide `0 / 0 =
+  NaN` behavior. Both conventions currently agree.
+
+  Portable tests cover one-split analytical values, TreeDist 2.14.1 reference values, exact
+  self-comparison, star trees, the MCI/CID identity, normalization, pairwise similarity
+  diagonals, symmetry, and CID's triangle inequality over 30 seeded random triples. The full
+  suite passes, 7824/7824. `validation/crosscheck.jl` now checks raw and normalized MCI/CID;
+  1,140 deterministic and random cases through 400 taxa produced zero mismatches against
+  TreeDist 2.14.1.
+
+  `benchmark/run.jl` and `benchmark/clusteringinfo.R` now time both metrics on identical
+  Newick inputs at 10, 50, 200 and 1000 taxa and check every returned value. MCI is
+  4.2× faster at 10 taxa, then 1.9×, 6.2× and 8.3× slower. CID is 9.3× and 1.1× faster at
+  10 and 50 taxa, then 4.0× and 6.3× slower. At 1000 taxa both Julia calls take about 48 ms
+  against TreeDist's 5.89 ms for MCI and 7.64 ms for CID. This needs a focused performance
+  pass before the information-metric track continues; see CHUNK-036.
 
 ### CHUNK-015: phylogenetic-information-metrics
 - **Description**: Shared phylogenetic information (SPI) — the conservative variant that
@@ -1437,6 +1481,22 @@ Produce these live in the MCP Julia session and let them go when it exits.
   it the tree walk's per-branch allocation rather than any lookup — the next place to look
   if this metric needs to get faster still.
 
+### CHUNK-036: clustering-information-performance
+- **Description**: Profile MCI/CID at 200 and 1000 taxa and close the measured gap against
+  TreeDist. Evaluate the two concrete differences already visible in TreeDist's source:
+  table `log2(0:n)` for the mutual-information score loop, and remove exactly shared splits
+  before constructing and solving the remaining assignment problem. Keep the formula and
+  public API unchanged.
+- **Status**: `not-started`
+- **Depends on**: CHUNK-014
+- **Verification strategy**: Preserve the full 7824-test pass and the 1,140-case TreeDist
+  cross-check with zero mismatches. Re-run `benchmark/run.jl` on the same seeded tree files;
+  report before/after timing, allocation and TreeDist ratio at every size. Profile before
+  editing and retain only changes tied to measured hot spots.
+- **Notes**: Baseline at 10/50/200/1000 taxa: MCI 10.8 µs / 106.1 µs / 1.33 ms / 48.66 ms,
+  CID 11.0 µs / 105.0 µs / 1.33 ms / 48.31 ms. TreeDist takes 45.1 µs / 57.0 µs /
+  214.0 µs / 5.89 ms for MCI and 101.8 µs / 119.0 µs / 335.9 µs / 7.64 ms for CID.
+
 ## Session ledger
 <!-- The implementer appends one line after each session: `- YYYY-MM-DD CHUNK-XXX (name) → next: CHUNK-YYY` -->
 
@@ -1456,6 +1516,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-20 CHUNK-033 (info-robinson-foulds) → next: CHUNK-034
 - 2026-08-20 CHUNK-034 (split-information-table) → next: CHUNK-035
 - 2026-08-20 CHUNK-035 (split-word-hashing) → next: CHUNK-014/015/020/030/031, any order
+- 2026-09-03 CHUNK-014 (clustering-information-metrics) → next: CHUNK-036
 
 ## Open Questions
 
