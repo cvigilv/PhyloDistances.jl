@@ -1,4 +1,4 @@
-# Session handoff, 2026-09-04
+# Session handoff, 2026-09-13
 
 ## Project maturity target
 
@@ -6,72 +6,56 @@
 
 ## What was just completed
 
-CHUNK-036: clustering-information-performance
+CHUNK-015: phylogenetic-information-metrics
 
-MCI and CID now remove exact split pairs before constructing the mutual-information matrix
-and solving the assignment problem. The remaining score loop uses a `log2(0:n)` lookup table
-with marginal terms hoisted by row and column. CID reuses the same table for both tree
-entropy sums.
+Added shared phylogenetic information as a similarity and matching split information as a
+distance. Both score every pair of non-trivial splits with table-backed phylogenetic
+information formulas, then use the existing dense assignment solver to select the best
+one-to-one matching.
 
 ## Key decisions made
 
-- Profiling confirmed both suspected costs. At 1000 taxa, score-matrix construction took
-  24.01 ms and assignment took 21.71 ms of a 48.55 ms MCI call. Scoring precomputed
-  contingency counts took 13.81 ms, while count arithmetic without logarithms took 0.12 ms.
-- Exact pairs are safe to fix before assignment. An exchange with one unmatched partner
-  follows from `MI(A, X) <= H(A)`; an exchange with two matched partners follows from the
-  triangle inequality for variation of information. On the seeded 1000-taxon pair, this
-  reduces the assignment from 997×997 to 193×193.
-- Integer-log lookup and exact-match removal were benchmarked independently. On pre-extracted
-  1000-taxon splits, lookup alone took 34.68 ms, exact removal alone took 1.72 ms, and both
-  took 1.29 ms, compared with 46.83 ms originally.
-- Tree entropy and exact-pair entropy use the same lookup-table arithmetic. This keeps raw
-  self-MCI equal to tree entropy, normalized self-MCI equal to `1.0`, and self-CID equal to
-  `0.0`, all exactly.
-- Bounds-check samples remained in the score loop after the two main changes. Applying
-  `@inbounds` only to the loop whose matrix axes and count ranges prove every access valid
-  cut the reduced 1000-taxon matrix by 11% and the full call by about 3%.
-- No broader tree-ingestion or assignment-solver changes were attempted. After this work,
-  taxon indexing and split extraction account for about half of the 1000-taxon call and most
-  of the 200-taxon call. Those paths are shared with other metrics.
+- SPI follows TreeDist's conservative rule: incompatible split pairs score exactly zero.
+- MSI scores the more informative of the two candidate splits induced by matching and
+  differing taxon memberships. MSID subtracts twice the optimal matched score from the two
+  trees' summed splitwise information.
+- SPI normalization uses mean tree information. MSID normalization uses summed tree
+  information. Both `:treedist` and `:primary` currently select the same formulas.
+- Exact shared splits stay in the full assignment problem. For both SPI and MSI, committed
+  fixtures show that fixing exact pairs first can lower the optimum. MCI's exact-pair
+  reduction is not valid here.
+- No benchmark files were added. This chunk's verification called for analytical tests and
+  TreeDist agreement, both of which now pass.
 
 ## State of the codebase
 
-- Files modified: `src/clusteringinformation.jl`, `test/test_clusteringinformation.jl`,
-  `benchmark/run.jl`, `benchmark/README.md`, `benchmark/results.md`, `ANALYSIS_PLAN.md`, and
-  this handoff. `validation/report.md` was regenerated and remains unchanged in content.
+- Files created: `src/phylogeneticinformation.jl`,
+  `test/test_phylogeneticinformation.jl`.
+- Files modified: `src/PhyloDistances.jl`, `test/runtests.jl`,
+  `validation/crosscheck.jl`, `validation/report.md`, `ANALYSIS_PLAN.md`, and this handoff.
 - Package loads cleanly: yes.
-- Test suite passes: yes, 9,224/9,224 with Julia 1.12.6.
-- Reference validation passes: yes. Raw and normalized MCI and CID still match TreeDist
-  2.14.1 across all 1,140 deterministic and seeded random cases, with zero mismatches.
-- Seeded benchmark passes: yes. Every Julia value agrees with its R reference.
-- Entry points: `MutualClusteringInfo()(tree1, tree2)` and
-  `ClusteringInfoDistance()(tree1, tree2)`. The public API and formulas are unchanged.
-- Final MCI timings at 10, 50, 200 and 1000 taxa are 9.8 µs, 60.9 µs, 271.1 µs and
-  2.62 ms. Final CID timings are 9.5 µs, 57.4 µs, 272.6 µs and 2.64 ms.
-- At 1000 taxa, MCI is now 2.2× faster than TreeDist and CID is 2.3× faster. Both allocate
-  2.89 MB instead of 10.42 MB. MCI remains 1.3× slower than TreeDist at 200 taxa.
+- Test suite passes: yes, 9,337/9,337 with Julia 1.12.6.
+- Reference validation passes: yes. Raw and normalized SPI/MSID agree with TreeDist 2.14.1
+  across all 1,140 deterministic and seeded random cases, with zero mismatches.
+- Entry points: `SharedPhylogeneticInfo()(tree1, tree2)` and
+  `MatchingSplitInfoDistance()(tree1, tree2)`.
 - Known issues: `validation/README.md` still overstates which comparisons are bitwise. The
   executable cross-check and generated report describe the tolerance correctly.
 
 ## Next chunk
 
-CHUNK-015: phylogenetic-information-metrics
+CHUNK-020: maximum-agreement-subtree
 
-Implement shared phylogenetic information and matching split information distance using the
-split-matching framework and `SplitInfoTable`. Read TreeDist's source first, preserve its
-incompatible-pair treatment, and validate raw and normalized forms against TreeDist.
+Implement maximum agreement subtree size and its information-content variant. It will use
+split extraction and the phylogenetic information functions now available. Validate small
+cases against exhaustive leaf-subset search and compare both forms with TreeDist.
 
 ## Watch out for
 
+- Read `R/tree_distance_mast.R` and its C++ implementation before choosing the algorithm or
+  defining what the information variant returns.
+- Exact-pair preprocessing is scorer-specific. Do not transfer MCI's optimization to SPI,
+  MSI, or another metric without an exchange proof and a brute-force check.
 - Put `/nix/store/jaqvbj23b52yl0qgcrrb4ysbxdlqlbv5-R-4.4.2-wrapper/bin` first on `PATH`
-  before running `validation/crosscheck.jl`. The benchmark intentionally uses the R 4.6.1
-  installation normally found on `PATH`.
-- Exact-match removal relies on both the mutual-information bound and the triangle inequality
-  for variation of information. Do not copy it to another scorer without proving the
-  corresponding exchange argument.
-- MCI's table-backed contingency formula differs from the standalone `mutualinformation`
-  evaluation only by floating-point rearrangement. Tests compare every matrix cell to the
-  standalone formula with a `1e-14` tolerance, and the TreeDist validation uses the existing
-  generalized-RF tolerance.
-- Test files share one namespace. Give new helper functions file-specific names.
+  before running `validation/crosscheck.jl`.
+- Test files share one namespace. New helpers need file-specific names.

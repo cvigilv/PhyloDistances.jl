@@ -13,5 +13,6 @@ using Test
     include("test_quartet.jl")
     include("test_generalizedrf.jl")
     include("test_clusteringinformation.jl")
+    include("test_phylogeneticinformation.jl")
     include("test_fixtures.jl")
 end

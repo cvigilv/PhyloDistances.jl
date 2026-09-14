@@ -152,7 +152,11 @@ function setupR()
         mci     = TreeDist::MutualClusteringInfo(t1, t2),
         mcinorm = TreeDist::MutualClusteringInfo(t1, t2, normalize = TRUE),
         cid     = TreeDist::ClusteringInfoDistance(t1, t2),
-        cidnorm = TreeDist::ClusteringInfoDistance(t1, t2, normalize = TRUE))
+        cidnorm = TreeDist::ClusteringInfoDistance(t1, t2, normalize = TRUE),
+        spi     = TreeDist::SharedPhylogeneticInfo(t1, t2),
+        spinorm = TreeDist::SharedPhylogeneticInfo(t1, t2, normalize = TRUE),
+        msid    = TreeDist::MatchingSplitInfoDistance(t1, t2),
+        msidnorm = TreeDist::MatchingSplitInfoDistance(t1, t2, normalize = TRUE))
     }
     """
     return rcopy(R"""
@@ -189,10 +193,10 @@ neither tree carries a split and the divisor is zero.
 """
 function checkpair(t1, t2, label, nw1, nw2)
     rf, rfnorm, irf, irfnorm, q, d, r1, r2, nye, nyenorm, refjrf, refjrfk2,
-        refjrfnorm, refmci, refmcinorm, refcid, refcidnorm =
-        rcopy(R"compare($nw1, $nw2)")
+        refjrfnorm, refmci, refmcinorm, refcid, refcidnorm, refspi, refspinorm,
+        refmsid, refmsidnorm = rcopy(R"compare($nw1, $nw2)")
     jrf, jrfn, jirf, jirfn, jq, jqn, jnye, jnyen, jjrf, jjrfk2, jjrfn, jmci,
-        jmcin, jcid, jcidn = quiet() do
+        jmcin, jcid, jcidn, jspi, jspin, jmsid, jmsidn = quiet() do
         (
             RobinsonFoulds()(t1, t2),
             RobinsonFoulds(; normalize = true)(t1, t2),
@@ -209,6 +213,10 @@ function checkpair(t1, t2, label, nw1, nw2)
             MutualClusteringInfo(; normalize = true)(t1, t2),
             ClusteringInfoDistance()(t1, t2),
             ClusteringInfoDistance(; normalize = true)(t1, t2),
+            SharedPhylogeneticInfo()(t1, t2),
+            SharedPhylogeneticInfo(; normalize = true)(t1, t2),
+            MatchingSplitInfoDistance()(t1, t2),
+            MatchingSplitInfoDistance(; normalize = true)(t1, t2),
         )
     end
     bad = Pair{Symbol,String}[]
@@ -270,6 +278,22 @@ function checkpair(t1, t2, label, nw1, nw2)
         _closeenough(jcidn, refcidnorm) ||
             push!(bad, :cidnorm => "$label: R=$(repr(refcidnorm)) here=$(repr(jcidn))")
     end
+    _closeenough(jspi, refspi) ||
+        push!(bad, :spi => "$label: R=$(repr(refspi)) here=$(repr(jspi))")
+    if isnan(refspinorm)
+        isnan(jspin) || push!(bad, :spinorm => "$label: R=NaN here=$(repr(jspin))")
+    else
+        _closeenough(jspin, refspinorm) ||
+            push!(bad, :spinorm => "$label: R=$(repr(refspinorm)) here=$(repr(jspin))")
+    end
+    _closeenough(jmsid, refmsid) ||
+        push!(bad, :msid => "$label: R=$(repr(refmsid)) here=$(repr(jmsid))")
+    if isnan(refmsidnorm)
+        isnan(jmsidn) || push!(bad, :msidnorm => "$label: R=NaN here=$(repr(jmsidn))")
+    else
+        _closeenough(jmsidn, refmsidnorm) ||
+            push!(bad, :msidnorm => "$label: R=$(repr(refmsidnorm)) here=$(repr(jmsidn))")
+    end
 
     return bad, isnan(rfnorm)
 end
@@ -291,6 +315,10 @@ const QUANTITIES = [
     :mcinorm => ("`MutualClusteringInfo(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
     :cid => ("`ClusteringInfoDistance()`", "TreeDist", "float, tolerance 1e-6"),
     :cidnorm => ("`ClusteringInfoDistance(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
+    :spi => ("`SharedPhylogeneticInfo()`", "TreeDist", "float, tolerance 1e-6"),
+    :spinorm => ("`SharedPhylogeneticInfo(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
+    :msid => ("`MatchingSplitInfoDistance()`", "TreeDist", "float, tolerance 1e-6"),
+    :msidnorm => ("`MatchingSplitInfoDistance(normalize = true)`", "TreeDist", "float, tolerance 1e-6"),
 ]
 
 function main()

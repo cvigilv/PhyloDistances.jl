@@ -481,6 +481,12 @@ Produce these live in the MCP Julia session and let them go when it exits.
   193×193. MCI/CID code must keep exact-pair entropy and tree entropy on the same arithmetic
   path so raw self-MCI, normalized self-MCI, and self-CID remain exactly `H`, `1.0`, and
   `0.0`.
+- 2026-09-13 (CHUNK-015): **Exact split pairs cannot be removed before SPI or MSI
+  assignment.** For both scorers, a full assignment can improve its total by pairing an
+  exactly shared split elsewhere. Small committed fixtures make the forced-exact optimum
+  strictly worse than the unrestricted one. The exact-pair reduction proved for MCI in
+  CHUNK-036 is scorer-specific and must not be copied to either phylogenetic-information
+  metric.
 
 ## Chunks
 
@@ -1054,11 +1060,38 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - **Description**: Shared phylogenetic information (SPI) — the conservative variant that
   assigns zero to incompatible split pairs — and the matching split information distance
   (MSID). Both are scoring functions over CHUNK-010 using CHUNK-013's quantities.
-- **Status**: `not-started`
+- **Status**: `complete`
 - **Depends on**: CHUNK-010, CHUNK-013
 - **Verification strategy**: Incompatible split pairs score exactly zero under SPI (assert
   directly on constructed pairs); identical trees maximize SPI.
-- **Notes**:
+- **Notes**: Lives in `src/phylogeneticinformation.jl`, exporting
+  `SharedPhylogeneticInfo` (`TreeSimilarity`) and `MatchingSplitInfoDistance`
+  (`TreeMetric`). Both build a dense split-pair score matrix from packed `UInt64` words and
+  maximize it with CHUNK-010's assignment solver. A `SplitInfoTable` supplies every rooted
+  and unrooted tree-count term in constant time.
+
+  SPI gives an incompatible pair exactly zero. For a compatible pair it computes the
+  information shared by the two splits from the number of binary trees consistent with
+  both. MSI instead forms the two candidate splits induced by taxa whose memberships agree
+  or differ between the input splits, then takes the more informative candidate. MSID is
+  `I(T₁) + I(T₂) - 2 MSI`, where each `I(T)` is total splitwise information.
+
+  TreeDist normalization was read from `R/tree_distance_info.R` and
+  `R/tree_distance_msi.R`: SPI divides by mean tree information, while MSID divides by
+  summed tree information. Both conventions currently coincide. A pair of star trees
+  retains the package-wide `0 / 0 = NaN` behavior.
+
+  **Do not remove exactly shared splits before either assignment.** Unlike MCI, some
+  optimal SPI and MSI matchings displace an exact pair. Seeded fixtures in
+  `test/test_phylogeneticinformation.jl` show that forcing all exact pairs lowers the
+  optimum for each scorer. TreeDist's current C++ implementation carries the same warning.
+
+  Portable tests cover analytical split scores, SPI's incompatible-pair zero, Smith's
+  worked MSI split example, exact-pair displacement, self-comparisons, star trees,
+  normalization, symmetry, pairwise diagonals, and input checks. The full suite passes
+  9,337/9,337. `validation/crosscheck.jl` now checks raw and normalized SPI/MSID against
+  TreeDist 2.14.1; all 1,140 deterministic and seeded random cases agree within the
+  established generalized-RF tolerance.
 
 ### CHUNK-016: path-distance-primitives
 - **Description**: Pairwise leaf-to-leaf path representations: the patristic (summed
@@ -1553,6 +1586,7 @@ Produce these live in the MCP Julia session and let them go when it exits.
 - 2026-08-20 CHUNK-035 (split-word-hashing) → next: CHUNK-014/015/020/030/031, any order
 - 2026-09-03 CHUNK-014 (clustering-information-metrics) → next: CHUNK-036
 - 2026-09-04 CHUNK-036 (clustering-information-performance) → next: CHUNK-015
+- 2026-09-13 CHUNK-015 (phylogenetic-information-metrics) → next: CHUNK-020
 
 ## Open Questions
 

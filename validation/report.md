@@ -33,6 +33,10 @@ alongside random trees.
 | `MutualClusteringInfo(normalize = true)` | TreeDist | float, tolerance 1e-6 | 0 |
 | `ClusteringInfoDistance()` | TreeDist | float, tolerance 1e-6 | 0 |
 | `ClusteringInfoDistance(normalize = true)` | TreeDist | float, tolerance 1e-6 | 0 |
+| `SharedPhylogeneticInfo()` | TreeDist | float, tolerance 1e-6 | 0 |
+| `SharedPhylogeneticInfo(normalize = true)` | TreeDist | float, tolerance 1e-6 | 0 |
+| `MatchingSplitInfoDistance()` | TreeDist | float, tolerance 1e-6 | 0 |
+| `MatchingSplitInfoDistance(normalize = true)` | TreeDist | float, tolerance 1e-6 | 0 |
 
 `RobinsonFoulds(normalize = true)` was `NaN` in 16 cases, where neither tree carries a split and the divisor is zero.
 
