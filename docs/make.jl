@@ -20,6 +20,7 @@ makedocs(;
     ),
     pages = [
         "Home" => "index.md",
+        "API reference" => "api.md",
         examples,
     ],
     plugins = [
@@ -27,7 +28,6 @@ makedocs(;
         bibliography,
     ],
     checkdocs = :exports,
-    warnonly = [:missing_docs],
 )
 
 finish_examples()

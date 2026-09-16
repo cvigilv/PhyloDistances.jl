@@ -23,7 +23,7 @@ reference formulation to diverge from.
 # Algorithm
 
 `algorithm = :fast` (the default) counts concordant quartets without enumerating them, in
-`O(n³)`; see [`_fastconcordantcount`](@ref) for the method. It requires that at least one
+`O(n³)`; see `_fastconcordantcount` for the method. It requires that at least one
 of the two trees be fully resolved (binary); if both carry a polytomy, it falls back to
 `:naive` and warns, since exactness cannot be guaranteed without the general (and
 unimplemented) two-polytomy case.
