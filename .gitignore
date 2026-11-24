@@ -43,3 +43,8 @@ benchmark/results_ramp_julia.tsv
 
 # MacOS system files
 .DS_Store
+
+# Logo files copied from docs/assets/logo by docs/make.jl
+docs/src/assets/logo-lockup.svg
+docs/src/assets/logo-lockup-dark.svg
+docs/src/assets/favicon.ico

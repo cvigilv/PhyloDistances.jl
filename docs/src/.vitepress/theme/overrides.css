@@ -1,0 +1,35 @@
+/* Loaded after DocumenterVitepress's style.css, so rules here take precedence. */
+
+/* Home hero: a single centered column with the lockup drawn in place of the hero name.
+   The name text stays in the page as the h1 but is not painted. The `.VPHome` prefix
+   outranks VitePress's scoped hero styles. */
+.VPHome .VPHero .container {
+  text-align: center;
+}
+
+.VPHome .VPHero .main {
+  width: 100%;
+}
+
+/* The lockup canvas is 1200 x 400 with its drawing in x 85-1099, y 80-320. The box shows
+   the centered 1080 x 290 window of it: the image is scaled to 1200/1080 of the box width
+   and the overflowing margins are clipped. */
+.VPHome .VPHero .name {
+  width: min(100%, 960px);
+  max-width: none;
+  aspect-ratio: 1080 / 290;
+  margin: 0 auto;
+  background: url("/logo-lockup.svg") center / 111.11% auto no-repeat;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.dark .VPHome .VPHero .name {
+  background-image: url("/logo-lockup-dark.svg");
+}
+
+.VPHome .VPHero .actions {
+  justify-content: center;
+}
