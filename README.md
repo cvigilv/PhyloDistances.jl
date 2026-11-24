@@ -1,6 +1,9 @@
-# PhyloDistances.jl
-
-Distance and similarity metrics between phylogenetic trees.
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo/phylodistances-lockup-dark.svg">
+    <img src="docs/assets/logo/phylodistances-lockup.svg" width="600" alt="PhyloDistances.jl: distances and similarities between phylogenetic trees">
+  </picture>
+</h1>
 
 Trees are read from Newick with [NewickTree.jl](https://github.com/arzwa/NewickTree.jl) and
 traversed through the

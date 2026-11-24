@@ -4,8 +4,6 @@ layout: home
 
 hero:
   name: "PhyloDistances.jl"
-  text: "Compare phylogenetic trees in Julia"
-  tagline: "Tree distances and similarities for AbstractTrees-compatible trees."
   actions:
     - theme: brand
       text: API reference
